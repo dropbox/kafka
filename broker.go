@@ -149,6 +149,12 @@ type BrokerConf struct {
 	// Defaults to 30s.
 	MetadataRefreshTimeout time.Duration
 
+	// MetadataRefreshFrequency is how often we should refresh metadata regardless of whether we
+	// have encountered errors.
+	//
+	// Defaults to 0 which means disabled.
+	MetadataRefreshFrequency time.Duration
+
 	// ConnectionLimit sets a limit on how many outstanding connections may exist to a
 	// single broker. This limit is for all connections in any state -- we will never use
 	// more than this many connections at a time. Setting this too low can limit your
@@ -175,17 +181,18 @@ type BrokerConf struct {
 
 func NewBrokerConf(clientID string) BrokerConf {
 	return BrokerConf{
-		ClientID:               clientID,
-		DialTimeout:            10 * time.Second,
-		DialRetryLimit:         10,
-		DialRetryWait:          500 * time.Millisecond,
-		AllowTopicCreation:     false,
-		LeaderRetryLimit:       10,
-		LeaderRetryWait:        500 * time.Millisecond,
-		MetadataRefreshTimeout: 30 * time.Second,
-		ConnectionLimit:        10,
-		IdleConnectionLimit:    5,
-		IdleConnectionWait:     200 * time.Millisecond,
+		ClientID:                 clientID,
+		DialTimeout:              10 * time.Second,
+		DialRetryLimit:           10,
+		DialRetryWait:            500 * time.Millisecond,
+		AllowTopicCreation:       false,
+		LeaderRetryLimit:         10,
+		LeaderRetryWait:          500 * time.Millisecond,
+		MetadataRefreshTimeout:   30 * time.Second,
+		MetadataRefreshFrequency: 0,
+		ConnectionLimit:          10,
+		IdleConnectionLimit:      5,
+		IdleConnectionWait:       200 * time.Millisecond,
 	}
 }
 
@@ -216,17 +223,10 @@ func SetLogger(logger Logger) {
 func Dial(nodeAddresses []string, conf BrokerConf) (*Broker, error) {
 	pool := newConnectionPool(conf)
 	broker := &Broker{
-		mu:    &sync.Mutex{},
-		conf:  conf,
-		conns: pool,
-		metadata: &clusterMetadata{
-			mu:      &sync.RWMutex{},
-			timeout: conf.MetadataRefreshTimeout,
-			refLock: &sync.Mutex{},
-			epoch:   new(int64),
-			conf:    conf,
-			conns:   pool,
-		},
+		mu:       &sync.Mutex{},
+		conf:     conf,
+		conns:    pool,
+		metadata: newClusterMetadata(conf, pool),
 	}
 
 	if len(nodeAddresses) == 0 {

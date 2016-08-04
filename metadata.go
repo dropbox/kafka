@@ -26,6 +26,31 @@ type clusterMetadata struct {
 	partitions map[string]int32         // topic to numer of partitions
 }
 
+func newClusterMetadata(conf BrokerConf, pool *connectionPool) *clusterMetadata {
+	result := &clusterMetadata{
+		mu:      &sync.RWMutex{},
+		timeout: conf.MetadataRefreshTimeout,
+		refLock: &sync.Mutex{},
+		epoch:   new(int64),
+		conf:    conf,
+		conns:   pool,
+	}
+	if conf.MetadataRefreshFrequency > 0 {
+		go func() {
+			log.Info("Periodically refreshing metadata.", "frequency", conf.MetadataRefreshFrequency)
+			for range time.Tick(conf.MetadataRefreshFrequency) {
+				if pool.IsClosed() {
+					log.Info("Aborting periodic metadata refresh due to closed connection pool.")
+					return
+				}
+				log.Info("Initiating periodic metadata refresh.")
+				result.Refresh()
+			}
+		}()
+	}
+	return result
+}
+
 // cache creates new internal metadata representation using data from
 // given response.
 //

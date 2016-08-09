@@ -40,6 +40,7 @@ type errorAverseRRProducerConf struct {
 	Producer              Producer
 	ErrorAverseBackoff    *backoff.Backoff
 	PartitionFetchTimeout time.Duration
+	PostProducer          PostProducer
 }
 
 func NewErrorAverseRRProducerConf() *errorAverseRRProducerConf {
@@ -53,6 +54,7 @@ func NewErrorAverseRRProducerConf() *errorAverseRRProducerConf {
 			Jitter: true,
 		},
 		PartitionFetchTimeout: time.Duration(10 * time.Second),
+		PostProducer:          nil,
 	}
 }
 
@@ -63,6 +65,7 @@ type errorAverseRRProducer struct {
 	partitionCountSource PartitionCountSource
 	producer             Producer
 	partitionManager     *partitionManager
+	postProducer         PostProducer
 }
 
 type NoPartitionsAvailable struct{}
@@ -80,7 +83,8 @@ func NewErrorAverseRRProducer(conf *errorAverseRRProducerConf) DistributingProdu
 			lock:                &sync.RWMutex{},
 			sharedRetry:         conf.ErrorAverseBackoff,
 			getTimeout:          conf.PartitionFetchTimeout,
-		}}
+		},
+		postProducer: conf.PostProducer}
 }
 
 func (d *errorAverseRRProducer) Distribute(topic string, messages ...*proto.Message) (offset int64, err error) {
@@ -104,8 +108,16 @@ func (d *errorAverseRRProducer) Distribute(topic string, messages ...*proto.Mess
 		return 0, err
 	} else {
 		partitionData.Success()
+		if d.postProducer != nil {
+			d.postProducer.PostProduceHandler(topic, partitionData.Partition, offset)
+		}
 		return offset, nil
 	}
+}
+
+// PostProducer does some work after a successful call to Produce.
+type PostProducer interface {
+	PostProduceHandler(topic string, partition int32, offset int64)
 }
 
 // partitionData wraps a retry tracker and the partitionManager's chan for

@@ -188,18 +188,12 @@ func (b *backend) Idle(conn *connection) {
 		return
 	}
 
-	// If we're above the idle connection limit, discard the connection.
-	if len(b.channel) >= b.conf.IdleConnectionLimit {
-		conn.Close()
-		b.removeConnection(conn)
-		return
-	}
-
 	select {
 	case b.channel <- conn:
 		// Do nothing, connection was requeued.
-	case <-time.After(b.conf.IdleConnectionWait):
-		// The queue is full for a while, discard this connection.
+	default:
+		// In theory this can never happen because it means we allocated more connections than
+		// the ConnectionLimit allows.
 		b.removeConnection(conn)
 		conn.Close()
 	}
@@ -255,7 +249,7 @@ func (cp *connectionPool) newBackend(addr string) *backend {
 		mu:      &sync.Mutex{},
 		conf:    cp.conf,
 		addr:    addr,
-		channel: make(chan *connection, cp.conf.IdleConnectionLimit),
+		channel: make(chan *connection, cp.conf.ConnectionLimit),
 	}
 }
 

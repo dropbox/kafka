@@ -162,14 +162,6 @@ type BrokerConf struct {
 	// Defaults to 10.
 	ConnectionLimit int
 
-	// IdleConnectionLimit sets a limit on how many currently idle connections can
-	// be open to each broker. Lowering this will reduce the number of unused connections
-	// to Kafka, but can result in extra latency during request spikes if connections
-	// are not available and have to be established.
-	//
-	// Defaults to 5.
-	IdleConnectionLimit int
-
 	// IdleConnectionWait sets a timeout on how long we should wait for a connection to
 	// become idle before we establish a new one. This value sets a cap on how much latency
 	// you're willing to add to a request before establishing a new connection.
@@ -190,7 +182,6 @@ func NewBrokerConf(clientID string) BrokerConf {
 		MetadataRefreshTimeout:   30 * time.Second,
 		MetadataRefreshFrequency: 0,
 		ConnectionLimit:          10,
-		IdleConnectionLimit:      5,
 		IdleConnectionWait:       200 * time.Millisecond,
 	}
 }

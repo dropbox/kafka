@@ -231,8 +231,9 @@ type connectionPool struct {
 
 	// mu protects the below members of this struct. This mutex must only be used by
 	// connectionPool.
-	mu     *sync.RWMutex
-	closed bool
+	mu         *sync.RWMutex
+	closed     bool
+	closedChan chan struct{}
 	// The keys of this map is the set of valid connection destinations, as specified by
 	// InitializeAddrs. Adding an addr to this map does not initiate a connection.
 	// If an addr is removed, any active backend pointing to it will be closed and no further
@@ -243,9 +244,10 @@ type connectionPool struct {
 // newConnectionPool creates a connection pool and initializes it.
 func newConnectionPool(conf BrokerConf) connectionPool {
 	return connectionPool{
-		conf:     conf,
-		mu:       &sync.RWMutex{},
-		backends: make(map[string]*backend),
+		conf:       conf,
+		mu:         &sync.RWMutex{},
+		closedChan: make(chan struct{}),
+		backends:   make(map[string]*backend),
 	}
 }
 
@@ -359,10 +361,20 @@ func (cp *connectionPool) Close() {
 		backend.Close()
 	}
 	cp.backends = nil
+	if !cp.closed {
+		close(cp.closedChan)
+	}
 	cp.closed = true
 }
 
-// IsClosed returns whether or not this pool is closed.
+// ClosedChan returns a channel which remains open iff this connectionPool is open. Equivalent
+// to polling IsClosed.
+func (cp *connectionPool) ClosedChan() <-chan struct{} {
+	return cp.closedChan
+}
+
+// IsClosed returns whether or not this pool is closed. Equiavelent to checking if the
+// result of ClosedChan is closed.
 func (cp *connectionPool) IsClosed() bool {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()

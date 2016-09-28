@@ -38,13 +38,15 @@ func newClusterMetadata(conf BrokerConf, pool *connectionPool) clusterMetadata {
 	if conf.MetadataRefreshFrequency > 0 {
 		go func() {
 			log.Info("Periodically refreshing metadata.", "frequency", conf.MetadataRefreshFrequency)
-			for range time.Tick(conf.MetadataRefreshFrequency) {
-				if pool.IsClosed() {
+			for {
+				select {
+				case <-time.After(conf.MetadataRefreshFrequency):
+					log.Info("Initiating periodic metadata refresh.")
+					result.Refresh()
+				case <-pool.ClosedChan():
 					log.Info("Aborting periodic metadata refresh due to closed connection pool.")
 					return
 				}
-				log.Info("Initiating periodic metadata refresh.")
-				result.Refresh()
 			}
 		}()
 	}

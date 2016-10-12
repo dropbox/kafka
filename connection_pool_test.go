@@ -8,12 +8,10 @@ import (
 
 var _ = Suite(&ConnectionPoolSuite{})
 
-type ConnectionPoolSuite struct {
-	l *testLogger
-}
+type ConnectionPoolSuite struct{}
 
 func (s *ConnectionPoolSuite) SetUpTest(c *C) {
-	s.l = &testLogger{c: c}
+	ResetTestLogger(c)
 }
 
 func (s *ConnectionPoolSuite) TestConnectionLimit(c *C) {

@@ -13,13 +13,7 @@ import (
 
 var _ = Suite(&ConnectionSuite{})
 
-type ConnectionSuite struct {
-	l *testLogger
-}
-
-func (s *ConnectionSuite) SetUpTest(c *C) {
-	s.l = &testLogger{c: c}
-}
+type ConnectionSuite struct{}
 
 type serializableMessage interface {
 	Bytes() ([]byte, error)

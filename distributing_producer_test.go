@@ -12,12 +12,10 @@ import (
 
 var _ = Suite(&DistProducerSuite{})
 
-type DistProducerSuite struct {
-	l *testLogger
-}
+type DistProducerSuite struct{}
 
 func (s *DistProducerSuite) SetUpTest(c *C) {
-	s.l = &testLogger{c: c}
+	ResetTestLogger(c)
 }
 
 type recordingProducer struct {

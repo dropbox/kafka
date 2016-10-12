@@ -20,41 +20,7 @@ func Test(t *testing.T) { TestingT(t) }
 type BrokerSuite struct{}
 
 func (s *BrokerSuite) SetUpTest(c *C) {
-	if log == nil {
-		SetLogger(&testLogger{c: c})
-	}
-}
-
-// testLogger prints everything using the gocheck output so we capture output with the
-// test for when/if they fail.
-type testLogger struct {
-	c *C
-}
-
-func (l *testLogger) toString(msg string, args ...interface{}) string {
-	if len(args)%2 != 0 {
-		return fmt.Sprintf("%s: <count mismatch!> %s", msg, args)
-	}
-
-	var argset []string
-	for idx := 0; idx < len(args)/2; idx++ {
-		argset = append(argset, fmt.Sprintf("%v=%v", args[idx*2], args[idx*2+1]))
-	}
-
-	return fmt.Sprintf("%s: %s", msg, strings.Join(argset, ", "))
-}
-
-func (l *testLogger) Debug(msg string, args ...interface{}) {
-	l.c.Logf("[D] %s", l.toString(msg, args...))
-}
-func (l *testLogger) Info(msg string, args ...interface{}) {
-	l.c.Logf("[I] %s", l.toString(msg, args...))
-}
-func (l *testLogger) Warn(msg string, args ...interface{}) {
-	l.c.Logf("[W] %s", l.toString(msg, args...))
-}
-func (l *testLogger) Error(msg string, args ...interface{}) {
-	l.c.Logf("[E] %s", l.toString(msg, args...))
+	ResetTestLogger(c)
 }
 
 // newTestBrokerConf returns BrokerConf with default configuration adjusted for

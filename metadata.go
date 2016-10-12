@@ -37,7 +37,8 @@ func newClusterMetadata(conf BrokerConf, pool *connectionPool) clusterMetadata {
 	}
 	if conf.MetadataRefreshFrequency > 0 {
 		go func() {
-			log.Info("Periodically refreshing metadata.", "frequency", conf.MetadataRefreshFrequency)
+			log.Infof("Periodically refreshing metadata (frequency=%s)",
+				conf.MetadataRefreshFrequency)
 			for {
 				select {
 				case <-time.After(conf.MetadataRefreshFrequency):
@@ -63,8 +64,7 @@ func (cm *clusterMetadata) cache(resp *proto.MetadataResp) {
 	defer cm.mu.Unlock()
 
 	if !cm.created.IsZero() {
-		log.Debug("rewriting old metadata",
-			"age", time.Now().Sub(cm.created))
+		log.Debugf("rewriting old metadata: %s", time.Now().Sub(cm.created))
 	}
 
 	cm.created = time.Now()
@@ -73,23 +73,19 @@ func (cm *clusterMetadata) cache(resp *proto.MetadataResp) {
 	cm.partitions = make(map[string]int32)
 
 	addrs := make([]string, 0)
-	debugmsg := make([]interface{}, 0)
 	for _, node := range resp.Brokers {
 		addr := fmt.Sprintf("%s:%d", node.Host, node.Port)
 		addrs = append(addrs, addr)
 		cm.nodes[node.NodeID] = addr
-		debugmsg = append(debugmsg, node.NodeID, addr)
 	}
 	for _, topic := range resp.Topics {
 		for _, part := range topic.Partitions {
 			dest := topicPartition{topic.Name, part.ID}
 			cm.endpoints[dest] = part.Leader
-			debugmsg = append(debugmsg, dest, part.Leader)
 		}
 		cm.partitions[topic.Name] = int32(len(topic.Partitions))
 	}
 	cm.conns.InitializeAddrs(addrs)
-	log.Debug("new metadata cached", debugmsg...)
 }
 
 // Refresh is requesting metadata information from any node and refresh
@@ -147,7 +143,7 @@ func (cm *clusterMetadata) Refresh() error {
 func (cm *clusterMetadata) Fetch(topics ...string) (*proto.MetadataResp, error) {
 	// Get all addresses, then walk the array in permuted random order.
 	addrs := cm.conns.GetAllAddrs()
-	log.Info("addrs", "addrs", addrs)
+	log.Infof("metadata fetch addrs: %s", addrs)
 	for _, idx := range rndPerm(len(addrs)) {
 		conn, err := cm.conns.GetConnectionByAddr(addrs[idx])
 		if err != nil {
@@ -160,9 +156,7 @@ func (cm *clusterMetadata) Fetch(topics ...string) (*proto.MetadataResp, error) 
 			Topics:   topics,
 		})
 		if err != nil {
-			log.Debug("cannot fetch metadata from node",
-				"addr", addrs[idx],
-				"error", err)
+			log.Debugf("cannot fetch metadata from node %s: %s", addrs[idx], err)
 			conn.Close()
 			continue
 		}
@@ -186,11 +180,11 @@ func (cm *clusterMetadata) PartitionCount(topic string) (int32, error) {
 
 // GetEndpoint returns a nodeID for a topic/partition. Returns an error if
 // the topic/partition is unknown.
-func (cm *clusterMetadata) GetEndpoint(tp topicPartition) (int32, error) {
+func (cm *clusterMetadata) GetEndpoint(topic string, partition int32) (int32, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	if nodeID, ok := cm.endpoints[tp]; ok {
+	if nodeID, ok := cm.endpoints[topicPartition{topic, partition}]; ok {
 		return nodeID, nil
 	}
 	return 0, errors.New("topic/partition not found in metadata")
@@ -198,11 +192,11 @@ func (cm *clusterMetadata) GetEndpoint(tp topicPartition) (int32, error) {
 
 // ForgetEndpoint is used to remove an endpoint that doesn't see to lead to
 // a valid location.
-func (cm *clusterMetadata) ForgetEndpoint(tp topicPartition) {
+func (cm *clusterMetadata) ForgetEndpoint(topic string, partition int32) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	delete(cm.endpoints, tp)
+	delete(cm.endpoints, topicPartition{topic, partition})
 }
 
 // GetNodes returns a map of nodes that exist in the cluster.

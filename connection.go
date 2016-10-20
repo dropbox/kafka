@@ -104,9 +104,7 @@ func (c *connection) readRespLoop() {
 		delete(c.respc, correlationID)
 		c.mu.Unlock()
 		if !ok {
-			log.Warn(
-				"response to unknown request",
-				"correlationID", correlationID)
+			log.Warningf("response to unknown request: %d", correlationID)
 			continue
 		}
 
@@ -137,7 +135,7 @@ func (c *connection) respWaiter(correlationID int32) (respc chan []byte, err err
 		return nil, c.stopErr
 	}
 	if _, ok := c.respc[correlationID]; ok {
-		log.Error("correlation conflict", "correlationID", correlationID)
+		log.Errorf("correlation conflict: %d", correlationID)
 		return nil, fmt.Errorf("correlation conflict: %d", correlationID)
 	}
 	respc = make(chan []byte)
@@ -195,12 +193,12 @@ func (c *connection) Metadata(req *proto.MetadataReq) (*proto.MetadataResp, erro
 
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
 
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}
@@ -228,12 +226,12 @@ func (c *connection) Produce(req *proto.ProduceReq) (*proto.ProduceResp, error) 
 
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
 
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}
@@ -254,12 +252,12 @@ func (c *connection) Fetch(req *proto.FetchReq) (*proto.FetchResp, error) {
 
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
 
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}
@@ -305,7 +303,7 @@ func (c *connection) Offset(req *proto.OffsetReq) (*proto.OffsetResp, error) {
 
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
 
@@ -313,7 +311,7 @@ func (c *connection) Offset(req *proto.OffsetReq) (*proto.OffsetResp, error) {
 	// -1 is for non node clients
 	req.ReplicaID = -1
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}
@@ -333,11 +331,12 @@ func (c *connection) ConsumerMetadata(req *proto.ConsumerMetadataReq) (*proto.Co
 	}
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
+
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}
@@ -355,11 +354,12 @@ func (c *connection) OffsetCommit(req *proto.OffsetCommitReq) (*proto.OffsetComm
 	}
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
+
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}
@@ -377,11 +377,12 @@ func (c *connection) OffsetFetch(req *proto.OffsetFetchReq) (*proto.OffsetFetchR
 	}
 	respc, err := c.respWaiter(req.CorrelationID)
 	if err != nil {
-		log.Error("failed waiting for response", "error", err)
+		log.Errorf("failed waiting for response: %s", err)
 		return nil, fmt.Errorf("wait for response: %s", err)
 	}
+
 	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Error("cannot write", "error", err)
+		log.Errorf("cannot write: %s", err)
 		c.releaseWaiter(req.CorrelationID)
 		return nil, err
 	}

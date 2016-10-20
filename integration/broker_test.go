@@ -22,8 +22,6 @@ func TestProducerBrokenConnection(t *testing.T) {
 		_ = cluster.Stop()
 	}()
 
-    kafka.SetLogger(&testLogger{t})
-
 	bconf := kafka.NewBrokerConf("producer-broken-connection")
 	addrs, err := cluster.KafkaAddrs()
 	if err != nil {
@@ -123,8 +121,6 @@ func TestConsumerBrokenConnection(t *testing.T) {
 		_ = cluster.Stop()
 	}()
 
-    kafka.SetLogger(&testLogger{t})
-
 	bconf := kafka.NewBrokerConf("producer-broken-connection")
 	addrs, err := cluster.KafkaAddrs()
 	if err != nil {
@@ -203,28 +199,4 @@ func TestConsumerBrokenConnection(t *testing.T) {
 	for err := range errc {
 		t.Errorf("cannot start container: %s", err)
 	}
-}
-
-type testLogger struct {
-	*testing.T
-}
-
-func (tlog *testLogger) Debug(msg string, keyvals ...interface{}) {
-	args := append([]interface{}{msg}, keyvals...)
-	tlog.Log(args...)
-}
-
-func (tlog *testLogger) Info(msg string, keyvals ...interface{}) {
-	args := append([]interface{}{msg}, keyvals...)
-	tlog.Log(args...)
-}
-
-func (tlog *testLogger) Warn(msg string, keyvals ...interface{}) {
-	args := append([]interface{}{msg}, keyvals...)
-	tlog.Log(args...)
-}
-
-func (tlog *testLogger) Error(msg string, keyvals ...interface{}) {
-	args := append([]interface{}{msg}, keyvals...)
-	tlog.Log(args...)
 }

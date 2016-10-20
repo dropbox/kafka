@@ -137,8 +137,8 @@ func (d *partitionData) Success() {
 	// a successful produce definitely happened in some sort of proximity to
 	// a failed produce.
 	if successiveFailures := atomic.LoadUint64(&d.successiveFailures); successiveFailures > 0 {
-		log.Info(fmt.Sprintf("Resetting partition successiveFailures for %d of %s, was %d",
-			d.Partition, d.topic, successiveFailures))
+		log.Infof("Resetting partition successiveFailures for %d of %s, was %d",
+			d.Partition, d.topic, successiveFailures)
 	}
 	atomic.StoreUint64(&d.successiveFailures, 0)
 }
@@ -159,15 +159,17 @@ func (d *partitionData) reEnqueue() {
 		if successiveFailures := atomic.LoadUint64(&d.successiveFailures); successiveFailures > 0 {
 			// The interface to ForAttempt is that the first failure should be #0.
 			t := d.sharedRetry.ForAttempt(float64(successiveFailures - 1))
-			log.Warn(fmt.Sprintf("Suspending partition %d of %s for %s (%d)", d.Partition, d.topic, t, successiveFailures))
+			log.Warningf("Suspending partition %d of %s for %s (%d)",
+				d.Partition, d.topic, t, successiveFailures)
 			time.Sleep(t)
-			log.Warn(fmt.Sprintf("Re-enqueueing partition %d of %s after %s", d.Partition, d.topic, t))
+			log.Warningf("Re-enqueueing partition %d of %s after %s",
+				d.Partition, d.topic, t)
 		}
 		select {
 		case d.availablePartitions <- d:
 		default:
-			log.Error(fmt.Sprintf("Programmer error in reEnqueue(%s, %d)! This should never happen.",
-				d.topic, d.Partition))
+			log.Errorf("Programmer error in reEnqueue(%s, %d)! This should never happen.",
+				d.topic, d.Partition)
 		}
 	}()
 }
@@ -207,12 +209,12 @@ func (p *partitionManager) SetPartitionCount(topic string, partitionCount int32)
 	defer p.lock.Unlock()
 
 	if availablePartitions, ok := p.availablePartitions[topic]; ok && int32(cap(availablePartitions)) == partitionCount {
-		log.Error(fmt.Sprintf("partitionManager(%s) hit slow path on SetPartitionCount but "+
-			"there is now no work to do. Count %d", topic, partitionCount))
+		log.Errorf("partitionManager(%s) hit slow path on SetPartitionCount but "+
+			"there is now no work to do. Count %d", topic, partitionCount)
 		return
 	} else {
-		log.Info(fmt.Sprintf("partitionManager adjusting partition count for %s: %d -> %d",
-			topic, cap(availablePartitions), partitionCount))
+		log.Infof("partitionManager adjusting partition count for %s: %d -> %d",
+			topic, cap(availablePartitions), partitionCount)
 
 		availablePartitions = make(chan *partitionData, partitionCount)
 		for i := int32(0); i < partitionCount; i++ {

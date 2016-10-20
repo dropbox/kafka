@@ -81,17 +81,11 @@ func (b *backend) debugHitMaxConnections() {
 	}
 	b.debugTime = now.Add(30 * time.Second)
 
-	log.Warn("DEBUG: hit max connections",
-		"counter", b.counter,
-		"len(conns)", len(b.conns),
-		"debugNumHitMax", b.debugNumHitMax)
-
+	log.Debugf("DEBUG: hit max connections (%d, %d, now %d times)",
+		b.counter, len(b.conns), b.debugNumHitMax)
 	for idx, conn := range b.conns {
-		log.Warn("DEBUG: connection",
-			"idx", idx,
-			"conn.addr", conn.addr,
-			"conn.closed", conn.IsClosed(),
-			"age", now.Sub(conn.StartTime()))
+		log.Debugf("DEBUG: connection %d: addr=%s, closed=%s, age=%s",
+			idx, conn.addr, conn.IsClosed(), now.Sub(conn.StartTime()))
 	}
 }
 
@@ -138,9 +132,9 @@ func (b *backend) getNewConnection() (*connection, error) {
 	connChan := make(chan connResult, 1)
 
 	go func() {
-		log.Debug("making new connection", "addr", b.addr)
+		log.Debugf("making new connection: %s", b.addr)
 		if conn, err := newTCPConnection(b.addr, b.conf.DialTimeout); err != nil {
-			log.Error("cannot connect", "addr", b.addr, "error", err)
+			log.Errorf("cannot connect to %s: %s", b.addr, err)
 			connChan <- connResult{nil, err}
 		} else {
 			connChan <- connResult{conn, nil}
@@ -149,7 +143,7 @@ func (b *backend) getNewConnection() (*connection, error) {
 
 	select {
 	case <-time.After(b.conf.DialTimeout):
-		log.Error("DEBUG: timeout waiting for dial", "addr", b.addr)
+		log.Errorf("DEBUG: timeout waiting for dial: %s", b.addr)
 		return nil, nil
 
 	case result := <-connChan:
@@ -295,7 +289,7 @@ func (cp *connectionPool) InitializeAddrs(addrs []string) {
 	defer cp.mu.Unlock()
 
 	if cp.closed {
-		log.Warn("Cannot InitializeAddrs on closed connectionPool.")
+		log.Warning("Cannot InitializeAddrs on closed connectionPool.")
 		return
 	}
 
@@ -307,12 +301,12 @@ func (cp *connectionPool) InitializeAddrs(addrs []string) {
 	for _, addr := range addrs {
 		delete(deletedAddrs, addr)
 		if _, ok := cp.backends[addr]; !ok {
-			log.Info("Initializing backend to addr", "addr", addr)
+			log.Infof("Initializing backend to addr: %s", addr)
 			cp.backends[addr] = cp.newBackend(addr)
 		}
 	}
 	for addr := range deletedAddrs {
-		log.Warn("Removing backend for addr", "addr", addr)
+		log.Warningf("Removing backend for addr: %s", addr)
 		if backend, ok := cp.backends[addr]; ok {
 			backend.Close()
 			delete(cp.backends, addr)

@@ -12,15 +12,7 @@ import (
 	"sync"
 
 	"github.com/dropbox/kafka/proto"
-	"github.com/op/go-logging"
 )
-
-var log *logging.Logger
-
-func init() {
-	log = logging.MustGetLogger("KafkaTest")
-	logging.SetLevel(logging.INFO, "KafkaTest")
-}
 
 type topicOffset struct {
 	offset   int64

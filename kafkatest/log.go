@@ -1,4 +1,4 @@
-package kafka
+package kafkatest
 
 import (
 	"sync"
@@ -16,8 +16,8 @@ func init() {
 	if log != nil {
 		return
 	}
-	log = logging.MustGetLogger("KafkaClient")
-	logging.SetLevel(logging.INFO, "KafkaClient")
+	log = logging.MustGetLogger("KafkaTest")
+	logging.SetLevel(logging.INFO, "KafkaTest")
 }
 
 func SetLogger(l *logging.Logger) {

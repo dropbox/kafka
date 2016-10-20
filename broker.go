@@ -25,9 +25,6 @@ const (
 )
 
 var (
-	// Logger used by the various components of the library
-	log Logger = &nullLogger{}
-
 	// Set up a new random source (by default Go doesn't seed it). This is not thread safe,
 	// so you must use the rndIntn method.
 	rnd   = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -205,12 +202,6 @@ type Broker struct {
 	metadata clusterMetadata
 }
 
-// SetLogger provides a logging instance. Should be called before any Dial or
-// other work is done to ensure everybody has the logger.
-func SetLogger(logger Logger) {
-	log = logger
-}
-
 // Dial connects to any node from a given list of kafka addresses and after
 // successful metadata fetch, returns broker.
 //
@@ -235,9 +226,8 @@ func Dial(nodeAddresses []string, conf BrokerConf) (*Broker, error) {
 	for try := 0; try < conf.DialRetryLimit; try++ {
 		if try > 0 {
 			sleepFor := retry.Duration()
-			log.Debug("cannot fetch metadata from any connection",
-				"retry", try,
-				"sleep", sleepFor)
+			log.Debugf("cannot fetch metadata from any connection (try %d, sleep %f)",
+				try, sleepFor)
 			time.Sleep(sleepFor)
 		}
 
@@ -252,8 +242,7 @@ func Dial(nodeAddresses []string, conf BrokerConf) (*Broker, error) {
 				// Metadata has been refreshed, so this broker is ready to go
 				return broker, nil
 			}
-			log.Error("cannot fetch metadata",
-				"error", err)
+			log.Errorf("cannot fetch metadata: %s", err)
 		case <-time.After(conf.DialTimeout):
 			log.Error("timeout fetching metadata")
 		}
@@ -279,6 +268,54 @@ func (b *Broker) PartitionCount(topic string) (int32, error) {
 	return b.metadata.PartitionCount(topic)
 }
 
+// getLeaderEndpoint returns the ID of the node responsible for a topic/partition.
+// This may refresh metadata and may also initiate topic creation if the topic is
+// unknown and such is enabled. This method may take a long time to return.
+func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error) {
+	// Attempt to learn where this topic/partition is. This may return an error in which
+	// case we don't know about it and should refresh metadata.
+	if nodeID, err := b.metadata.GetEndpoint(topic, partition); err == nil {
+		return nodeID, nil
+	}
+
+	// Endpoint is unknown, refresh metadata (synchronous, blocks a while)
+	if err := b.metadata.Refresh(); err != nil {
+		log.Warningf("[getLeaderEndpoint %s:%d] cannot refresh metadata: %s",
+			topic, partition, err)
+		return 0, err
+	}
+
+	// Successfully refreshed metadata, try to get endpoint again
+	if nodeID, err := b.metadata.GetEndpoint(topic, partition); err == nil {
+		return nodeID, nil
+	}
+
+	// If we're not allowed to create topics, exit now we're done
+	if !b.conf.AllowTopicCreation {
+		log.Warningf("[getLeaderEndpoint %s:%d] unknown topic or partition (no create)",
+			topic, partition)
+		return 0, proto.ErrUnknownTopicOrPartition
+	}
+
+	// Try to create the topic by requesting the metadata for that one specific topic
+	// (this is the hack Kafka uses to allow topics to be created on demand)
+	if _, err := b.metadata.Fetch(topic); err != nil {
+		log.Warningf("[getLeaderEndpoint %s:%d] failed to get metadata for topic: %s",
+			topic, partition, err)
+		return 0, err
+	}
+
+	// Successfully refreshed metadata, try to get endpoint again
+	if nodeID, err := b.metadata.GetEndpoint(topic, partition); err == nil {
+		return nodeID, nil
+	}
+
+	// This topic is dead to us, we failed to find it and failed to create it
+	log.Warningf("[getLeaderEndpoint %s:%d] unknown topic or partition (post-create)",
+		topic, partition)
+	return 0, proto.ErrUnknownTopicOrPartition
+}
+
 // leaderConnection returns connection to leader for given partition. If
 // connection does not exist, broker will try to connect.
 //
@@ -288,19 +325,13 @@ func (b *Broker) PartitionCount(topic string) (int32, error) {
 // the leader we will return a random broker. The broker will error if we end
 // up producing to it incorrectly (i.e., our metadata happened to be out of
 // date).
-func (b *Broker) leaderConnection(
-	topic string, partition int32) (conn *connection, err error) {
-
-	tp := topicPartition{topic, partition}
+func (b *Broker) leaderConnection(topic string, partition int32) (*connection, error) {
 	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
 	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
 		if try != 0 {
 			sleepFor := retry.Duration()
-			log.Debug("cannot get leader connection",
-				"topic", topic,
-				"partition", partition,
-				"retry", try,
-				"sleep", sleepFor)
+			log.Debugf("cannot get leader connection for %s:%d: retry=%d, sleep=%f",
+				topic, partition, try, sleepFor)
 			time.Sleep(sleepFor)
 		}
 
@@ -308,69 +339,37 @@ func (b *Broker) leaderConnection(
 			return nil, errors.New("Broker was closed, giving up on leaderConnection.")
 		}
 
-		// Attempt to learn where this topic/partition is. This may return an error in which
-		// case we don't know about it and should refresh metadata.
-		var nodeID int32
-		nodeID, err = b.metadata.GetEndpoint(tp)
+		// Figure out which broker (node/endpoint) is presently leader for this t/p
+		nodeID, err := b.getLeaderEndpoint(topic, partition)
 		if err != nil {
-			err = b.metadata.Refresh()
-			if err != nil {
-				log.Info("cannot get leader connection: cannot refresh metadata",
-					"error", err)
-				continue
-			}
-			nodeID, err = b.metadata.GetEndpoint(tp)
-			if err != nil {
-				err = proto.ErrUnknownTopicOrPartition
-				// If we allow topic creation, now is the point where it is likely that this
-				// is a brand new topic, so try to get metadata on it (which will trigger
-				// the creation process)
-				if b.conf.AllowTopicCreation {
-					_, err := b.metadata.Fetch(topic)
-					if err != nil {
-						log.Info("failed to fetch metadata for new topic",
-							"topic", topic,
-							"error", err)
-					}
-				} else {
-					log.Info("cannot get leader connection: unknown topic or partition",
-						"topic", topic,
-						"partition", partition,
-						"endpoint", tp)
-					// We've already refreshed the metadata. The topic doesn't exist and we're
-					// not in creation mode so let's return now so we don't spend all the retries
-					// refreshing a topic that doesn't exist.
-					break
-				}
-				continue
-			}
+			continue
 		}
 
 		// Now attempt to get a connection to this node
-		addr := b.metadata.GetNodeAddress(nodeID)
-		if addr == "" {
-			log.Info("cannot get leader connection: no information about node",
-				"nodeID", nodeID)
-			err = proto.ErrBrokerNotAvailable
-			// Forget the endpoint so we'll refresh metadata after the next retry.
-			b.metadata.ForgetEndpoint(tp)
-			continue
+		if addr := b.metadata.GetNodeAddress(nodeID); addr == "" {
+			// Forget the endpoint so we'll refresh metadata next try
+			log.Warningf("[leaderConnection %s:%d] unknown broker ID: %d",
+				topic, partition, nodeID)
+			b.metadata.ForgetEndpoint(topic, partition)
+		} else {
+			// TODO: Can this return a non-nil error if the connection pool is full?
+			if conn, err := b.conns.GetConnectionByAddr(addr); err != nil {
+				// Forget the endpoint. It's possible this broker has failed and we want to wait
+				// for Kafka to elect a new leader. To trick our algorithm into working we have to
+				// forget this endpoint so it will refresh metadata.
+				log.Warningf("[leaderConnection %s:%d] failed to connect to %s: %s",
+					topic, partition, addr, err)
+				b.metadata.ForgetEndpoint(topic, partition)
+			} else {
+				// Successful (supposedly) connection
+				return conn, nil
+			}
 		}
-
-		conn, err = b.conns.GetConnectionByAddr(addr)
-		if err != nil {
-			log.Info("cannot get leader connection: cannot connect to node",
-				"address", addr,
-				"error", err)
-			// Forget the endpoint. It's possible this broker has failed and we want to wait
-			// for Kafka to elect a new leader. To trick our algorithm into working we have to
-			// forget this endpoint so it will refresh metadata.
-			b.metadata.ForgetEndpoint(tp)
-			continue
-		}
-		return conn, nil
 	}
-	return nil, err
+
+	// All paths lead to the topic/partition being unknown, a more specific error would have
+	// been returned earlier
+	return nil, proto.ErrUnknownTopicOrPartition
 }
 
 // coordinatorConnection returns connection to offset coordinator for given group. NOTE:
@@ -406,16 +405,14 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 				ConsumerGroup: consumerGroup,
 			})
 			if err != nil {
-				log.Debug("cannot fetch consumer metadata",
-					"consumGrp", consumerGroup,
-					"error", err)
+				log.Debugf("cannot fetch consumer metadata for %s: %s",
+					consumerGroup, err)
 				resErr = err
 				continue
 			}
 			if resp.Err != nil {
-				log.Debug("metadata response error",
-					"consumGrp", consumerGroup,
-					"error", resp.Err)
+				log.Debugf("metadata response error for %s: %s",
+					consumerGroup, resp.Err)
 				resErr = resp.Err
 				continue
 			}
@@ -423,10 +420,8 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 			addr := fmt.Sprintf("%s:%d", resp.CoordinatorHost, resp.CoordinatorPort)
 			conn, err = b.conns.GetConnectionByAddr(addr)
 			if err != nil {
-				log.Debug("cannot connect to coordinator node",
-					"coordinatorID", resp.CoordinatorID,
-					"address", addr,
-					"error", err)
+				log.Debugf("cannot connect to coordinator node %d at %s: %s",
+					resp.CoordinatorID, addr, err)
 				resErr = err
 				continue
 			}
@@ -441,8 +436,7 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 		// Refresh metadata. At this point it looks like none of the connections worked, so
 		// possibly we need a new set.
 		if err := b.metadata.Refresh(); err != nil {
-			log.Debug("cannot refresh metadata",
-				"error", err)
+			log.Debugf("cannot refresh metadata: %s", err)
 			resErr = err
 			continue
 		}
@@ -487,10 +481,8 @@ offsetRetryLoop:
 		resp, err := conn.Offset(req)
 		if err != nil {
 			if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
-				log.Debug("connection died while sending message",
-					"topic", topic,
-					"partition", partition,
-					"error", err)
+				log.Debugf("connection died while sending message to %s:%d: %s",
+					topic, partition, err)
 				conn.Close()
 				resErr = err
 				continue
@@ -499,40 +491,31 @@ offsetRetryLoop:
 		}
 
 		for _, t := range resp.Topics {
-			if t.Name != topic {
-				log.Debug("unexpected topic information",
-					"expected", topic,
-					"got", t.Name)
-				continue
-			}
-			for _, part := range t.Partitions {
-				if part.ID != partition {
-					log.Debug("unexpected partition information",
-						"topic", t.Name,
-						"expected", partition,
-						"got", part.ID)
+			for _, p := range t.Partitions {
+				if t.Name != topic || p.ID != partition {
+					log.Warningf("offset response with unexpected data for %s:%d",
+						t.Name, p.ID)
 					continue
 				}
-				resErr = part.Err
+				resErr = p.Err
 
-				switch part.Err {
-				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition, proto.ErrBrokerNotAvailable:
+				switch p.Err {
+				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition,
+					proto.ErrBrokerNotAvailable:
 					// Failover happened, so we probably need to talk to a different broker. Let's
 					// kick off a metadata refresh.
-					log.Debug("cannot fetch offset",
-						"error", part.Err)
+					log.Debugf("cannot fetch offset: %s", p.Err)
 					if err := b.metadata.Refresh(); err != nil {
-						log.Debug("cannot refresh metadata",
-							"error", err)
+						log.Debugf("cannot refresh metadata: %s", err)
 					}
 					continue offsetRetryLoop
 				}
 
 				// Happens when there are no messages in the partition
-				if len(part.Offsets) == 0 {
-					return 0, part.Err
+				if len(p.Offsets) == 0 {
+					return 0, p.Err
 				} else {
-					return part.Offsets[0], part.Err
+					return p.Offsets[0], p.Err
 				}
 			}
 		}
@@ -635,13 +618,10 @@ retryLoop:
 			// access to connection
 		default:
 			if err := p.broker.metadata.Refresh(); err != nil {
-				log.Debug("cannot refresh metadata",
-					"error", err)
+				log.Debugf("cannot refresh metadata: %s", err)
 			}
 		}
-		log.Debug("cannot produce messages",
-			"retry", retry,
-			"error", err)
+		log.Debugf("cannot produce messages (try %d): %s", retry, err)
 	}
 
 	if err == nil {
@@ -688,46 +668,35 @@ func (p *producer) produce(
 			// Connection is broken, so should be closed, but the error is
 			// still valid and should be returned so that retry mechanism have
 			// chance to react.
-			log.Debug("connection died while sending message",
-				"topic", topic,
-				"partition", partition,
-				"error", err)
+			log.Debugf("connection died while sending message to %s:%d: %s",
+				topic, partition, err)
 			conn.Close()
 		}
 		return 0, err
 	}
 
+	// No response if we've asked for no acks
 	if req.RequiredAcks == proto.RequiredAcksNone {
 		return 0, err
 	}
 
-	// we expect single partition response
-	found := false
+	// Presently we only handle producing to a single topic/partition so return it as
+	// soon as we've found it
 	for _, t := range resp.Topics {
-		if t.Name != topic {
-			log.Debug("unexpected topic information received",
-				"expected", topic,
-				"got", t.Name)
-			continue
-		}
-		for _, part := range t.Partitions {
-			if part.ID != partition {
-				log.Debug("unexpected partition information received",
-					"topic", t.Name,
-					"expected", partition,
-					"got", part.ID)
+		for _, p := range t.Partitions {
+			if t.Name != topic || p.ID != partition {
+				log.Warningf("produce response with unexpected data for %s:%d",
+					t.Name, p.ID)
 				continue
 			}
-			found = true
-			offset = part.Offset
-			err = part.Err
+
+			return p.Offset, p.Err
 		}
 	}
 
-	if !found {
-		return 0, errors.New("incomplete produce response")
-	}
-	return offset, err
+	// If we get here we didn't find the topic/partition in the response, this is an
+	// error condition of some kind
+	return 0, errors.New("incomplete produce response")
 }
 
 type ConsumerConf struct {
@@ -962,51 +931,39 @@ consumeRetryLoop:
 		resp, err := conn.Fetch(&req)
 		resErr = err
 		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
-			log.Debug("connection died while fetching message",
-				"topic", c.conf.Topic,
-				"partition", c.conf.Partition,
-				"error", err)
+			log.Debugf("connection died while fetching messages from %s:%d: %s",
+				c.conf.Topic, c.conf.Partition, err)
 			conn.Close()
 			continue
 		}
 
 		if err != nil {
-			log.Debug("cannot fetch messages: unknown error",
-				"retry", retry,
-				"error", err)
+			log.Debugf("cannot fetch messages (try %d): %s", retry, err)
 			conn.Close()
 			continue
 		}
 
-		for _, topic := range resp.Topics {
-			if topic.Name != c.conf.Topic {
-				log.Warn("unexpected topic information received",
-					"got", topic.Name,
-					"expected", c.conf.Topic)
-				continue
-			}
-			for _, part := range topic.Partitions {
-				if part.ID != c.conf.Partition {
-					log.Warn("unexpected partition information received",
-						"topic", topic.Name,
-						"expected", c.conf.Partition,
-						"got", part.ID)
+		// Should only be a single topic/partition in the response, the one we asked about.
+		for _, t := range resp.Topics {
+			for _, p := range t.Partitions {
+				if t.Name != c.conf.Topic || p.ID != c.conf.Partition {
+					log.Warningf("fetch response with unexpected data for %s:%d",
+						t.Name, p.ID)
 					continue
 				}
-				switch part.Err {
-				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition, proto.ErrBrokerNotAvailable:
+
+				switch p.Err {
+				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition,
+					proto.ErrBrokerNotAvailable:
 					// Failover happened, so we probably need to talk to a different broker. Let's
 					// kick off a metadata refresh.
-					log.Debug("cannot fetch messages",
-						"retry", retry,
-						"error", part.Err)
+					log.Debugf("cannot fetch messages (try %d): %s", retry, p.Err)
 					if err := c.broker.metadata.Refresh(); err != nil {
-						log.Debug("cannot refresh metadata",
-							"error", err)
+						log.Debugf("cannot refresh metadata: %s", err)
 					}
 					continue consumeRetryLoop
 				}
-				return part.Messages, part.Err
+				return p.Messages, p.Err
 			}
 		}
 		return nil, errors.New("incomplete fetch response")
@@ -1103,30 +1060,20 @@ func (c *offsetCoordinator) commit(
 		resErr = err
 
 		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
-			log.Debug("connection died while committing",
-				"topic", topic,
-				"partition", partition,
-				"consumGrp", c.conf.ConsumerGroup)
+			log.Debugf("connection died while committing on %s:%d for %s: %s",
+				topic, partition, c.conf.ConsumerGroup, err)
 			conn.Close()
 
 		} else if err == nil {
+			// Should be a single response in the payload.
 			for _, t := range resp.Topics {
-				if t.Name != topic {
-					log.Debug("unexpected topic information received",
-						"got", t.Name,
-						"expected", topic)
-					continue
-
-				}
-				for _, part := range t.Partitions {
-					if part.ID != partition {
-						log.Debug("unexpected partition information received",
-							"topic", topic,
-							"got", part.ID,
-							"expected", partition)
+				for _, p := range t.Partitions {
+					if t.Name != topic || p.ID != partition {
+						log.Warningf("commit response with unexpected data for %s:%d",
+							t.Name, p.ID)
 						continue
 					}
-					return part.Err
+					return p.Err
 				}
 			}
 			return errors.New("response does not contain commit information")
@@ -1170,32 +1117,23 @@ func (c *offsetCoordinator) Offset(topic string, partition int32) (offset int64,
 
 		switch err {
 		case io.EOF, syscall.EPIPE:
-			log.Debug("connection died while fetching offset",
-				"topic", topic,
-				"partition", partition,
-				"consumGrp", c.conf.ConsumerGroup)
+			log.Debugf("connection died while fetching offsets on %s:%d for %s: %s",
+				topic, partition, c.conf.ConsumerGroup, err)
 			conn.Close()
 
 		case nil:
 			for _, t := range resp.Topics {
-				if t.Name != topic {
-					log.Debug("unexpected topic information received",
-						"got", t.Name,
-						"expected", topic)
-					continue
-				}
-				for _, part := range t.Partitions {
-					if part.ID != partition {
-						log.Debug("unexpected partition information received",
-							"topic", topic,
-							"expected", partition,
-							"get", part.ID)
+				for _, p := range t.Partitions {
+					if t.Name != topic || p.ID != partition {
+						log.Warningf("offset response with unexpected data for %s:%d",
+							t.Name, p.ID)
 						continue
 					}
-					if part.Err != nil {
-						return 0, "", part.Err
+
+					if p.Err != nil {
+						return 0, "", p.Err
 					}
-					return part.Offset, part.Metadata, nil
+					return p.Offset, p.Metadata, nil
 				}
 			}
 			return 0, "", errors.New("response does not contain offset information")

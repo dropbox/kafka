@@ -452,14 +452,8 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 
 // offset will return offset value for given partition. Use timems to specify
 // which offset value should be returned.
-func (b *Broker) offset(topic string, partition int32, timems int64) (offset int64, err error) {
-	conn, err := b.leaderConnection(topic, partition)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { go b.conns.Idle(conn) }()
-
-	resp, err := conn.Offset(&proto.OffsetReq{
+func (b *Broker) offset(topic string, partition int32, timems int64) (int64, error) {
+	req := &proto.OffsetReq{
 		ClientID:  b.conf.ClientID,
 		ReplicaID: -1, // any client
 		Topics: []proto.OffsetReqTopic{
@@ -474,51 +468,80 @@ func (b *Broker) offset(topic string, partition int32, timems int64) (offset int
 				},
 			},
 		},
-	})
-
-	if err != nil {
-		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
-			// Connection is broken, so should be closed, but the error is
-			// still valid and should be returned so that retry mechanism have
-			// chance to react.
-			log.Debug("connection died while sending message",
-				"topic", topic,
-				"partition", partition,
-				"error", err)
-			conn.Close()
-		}
-		return 0, err
 	}
-	found := false
-	for _, t := range resp.Topics {
-		if t.Name != topic {
-			log.Debug("unexpected topic information",
-				"expected", topic,
-				"got", t.Name)
-			continue
+
+	var resErr error
+	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
+offsetRetryLoop:
+	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
+		if try != 0 {
+			time.Sleep(retry.Duration())
 		}
-		for _, part := range t.Partitions {
-			if part.ID != partition {
-				log.Debug("unexpected partition information",
-					"topic", t.Name,
-					"expected", partition,
-					"got", part.ID)
+
+		conn, err := b.leaderConnection(topic, partition)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { go b.conns.Idle(conn) }()
+
+		resp, err := conn.Offset(req)
+		if err != nil {
+			if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
+				log.Debug("connection died while sending message",
+					"topic", topic,
+					"partition", partition,
+					"error", err)
+				conn.Close()
+				resErr = err
 				continue
 			}
-			found = true
-			// happens when there are no messages
-			if len(part.Offsets) == 0 {
-				offset = 0
-			} else {
-				offset = part.Offsets[0]
+			return 0, err
+		}
+
+		for _, t := range resp.Topics {
+			if t.Name != topic {
+				log.Debug("unexpected topic information",
+					"expected", topic,
+					"got", t.Name)
+				continue
 			}
-			err = part.Err
+			for _, part := range t.Partitions {
+				if part.ID != partition {
+					log.Debug("unexpected partition information",
+						"topic", t.Name,
+						"expected", partition,
+						"got", part.ID)
+					continue
+				}
+				resErr = part.Err
+
+				switch part.Err {
+				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition, proto.ErrBrokerNotAvailable:
+					// Failover happened, so we probably need to talk to a different broker. Let's
+					// kick off a metadata refresh.
+					log.Debug("cannot fetch offset",
+						"error", part.Err)
+					if err := b.metadata.Refresh(); err != nil {
+						log.Debug("cannot refresh metadata",
+							"error", err)
+					}
+					continue offsetRetryLoop
+				}
+
+				// Happens when there are no messages in the partition
+				if len(part.Offsets) == 0 {
+					return 0, part.Err
+				} else {
+					return part.Offsets[0], part.Err
+				}
+			}
 		}
 	}
-	if !found {
+
+	if resErr == nil {
 		return 0, errors.New("incomplete fetch response")
 	}
-	return offset, err
+	return 0, resErr
 }
 
 // OffsetEarliest returns the oldest offset available on the given partition.

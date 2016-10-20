@@ -806,8 +806,10 @@ func (s *BrokerSuite) TestPartitionOffset(c *C) {
 	srv.Start()
 	defer srv.Close()
 
-	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
+	md := NewMetadataHandler(srv, false)
+	srv.Handle(MetadataRequest, md.Handler())
 
+	count := 0
 	var handlerErr error
 	srv.Handle(OffsetRequest, func(request Serializable) Serializable {
 		req := request.(*proto.OffsetReq)
@@ -817,6 +819,13 @@ func (s *BrokerSuite) TestPartitionOffset(c *C) {
 		if req.Topics[0].Partitions[0].TimeMs != -2 {
 			handlerErr = fmt.Errorf("expected -2 timems, got %d", req.Topics[0].Partitions[0].TimeMs)
 		}
+
+		var resErr error
+		count++
+		if count < 3 {
+			resErr = proto.ErrLeaderNotAvailable
+		}
+
 		return &proto.OffsetResp{
 			CorrelationID: req.CorrelationID,
 			Topics: []proto.OffsetRespTopic{
@@ -826,6 +835,7 @@ func (s *BrokerSuite) TestPartitionOffset(c *C) {
 						{
 							ID:      1,
 							Offsets: []int64{123, 0},
+							Err:     resErr,
 						},
 					},
 				},
@@ -836,10 +846,12 @@ func (s *BrokerSuite) TestPartitionOffset(c *C) {
 	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
+	c.Assert(md.NumGeneralFetches(), Equals, 1)
 	offset, err := broker.offset("test", 1, -2)
 	c.Assert(handlerErr, IsNil)
 	c.Assert(err, IsNil)
 	c.Assert(offset, Equals, int64(123))
+	c.Assert(md.NumGeneralFetches(), Equals, 3)
 }
 
 func (s *BrokerSuite) TestPartitionCount(c *C) {

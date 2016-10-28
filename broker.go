@@ -847,12 +847,12 @@ func (c *consumer) consume() ([]*proto.Message, error) {
 			return nil, err
 		}
 		if len(msgbuf) == 0 {
-			if c.conf.RetryWait > 0 {
-				time.Sleep(c.conf.RetryWait)
-			}
 			retry += 1
 			if c.conf.RetryLimit != -1 && retry > c.conf.RetryLimit {
 				return nil, ErrNoData
+			}
+			if c.conf.RetryWait > 0 {
+				time.Sleep(c.conf.RetryWait)
 			}
 		}
 	}

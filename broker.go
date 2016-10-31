@@ -390,7 +390,7 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 		}
 
 		if conn != nil {
-			defer func() { go b.conns.Idle(conn) }()
+			defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
 			resp, err := conn.ConsumerMetadata(&proto.ConsumerMetadataReq{
 				ClientID:      b.conf.ClientID,
 				ConsumerGroup: consumerGroup,
@@ -467,7 +467,7 @@ offsetRetryLoop:
 		if err != nil {
 			return 0, err
 		}
-		defer func() { go b.conns.Idle(conn) }()
+		defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.Offset(req)
 		if err != nil {
@@ -633,7 +633,7 @@ func (p *producer) produce(
 	if err != nil {
 		return 0, err
 	}
-	defer func() { go p.broker.conns.Idle(conn) }()
+	defer func(lconn *connection) { go p.broker.conns.Idle(lconn) }(conn)
 
 	req := proto.ProduceReq{
 		ClientID:     p.broker.conf.ClientID,
@@ -917,7 +917,7 @@ consumeRetryLoop:
 			resErr = err
 			continue
 		}
-		defer func() { go c.broker.conns.Idle(conn) }()
+		defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.Fetch(&req)
 		resErr = err
@@ -1034,7 +1034,7 @@ func (c *offsetCoordinator) commit(
 			resErr = err
 			continue
 		}
-		defer func() { go c.broker.conns.Idle(conn) }()
+		defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.OffsetCommit(&proto.OffsetCommitReq{
 			ClientID:      c.broker.conf.ClientID,
@@ -1093,7 +1093,7 @@ func (c *offsetCoordinator) Offset(topic string, partition int32) (offset int64,
 			resErr = err
 			continue
 		}
-		defer func() { go c.broker.conns.Idle(conn) }()
+		defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.OffsetFetch(&proto.OffsetFetchReq{
 			ConsumerGroup: c.conf.ConsumerGroup,

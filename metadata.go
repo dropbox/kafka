@@ -149,7 +149,7 @@ func (cm *clusterMetadata) Fetch(topics ...string) (*proto.MetadataResp, error) 
 		if err != nil {
 			continue
 		}
-		defer func() { go cm.conns.Idle(conn) }()
+		defer func(lconn *connection) { go cm.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.Metadata(&proto.MetadataReq{
 			ClientID: cm.conf.ClientID,

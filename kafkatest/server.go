@@ -21,7 +21,7 @@ type topicOffset struct {
 
 // Server is container for fake kafka server data.
 type Server struct {
-	mu          sync.RWMutex
+	mu          *sync.RWMutex
 	brokers     []proto.MetadataRespBroker
 	topics      map[string]map[int32][]*proto.Message
 	offsets     map[string]map[int32]map[string]*topicOffset
@@ -53,6 +53,7 @@ func NewServer(middlewares ...Middleware) *Server {
 		topics:      make(map[string]map[int32][]*proto.Message),
 		offsets:     make(map[string]map[int32]map[string]*topicOffset),
 		middlewares: middlewares,
+		mu:          &sync.RWMutex{},
 	}
 	return s
 }
@@ -80,6 +81,16 @@ func (s *Server) Reset() {
 	defer s.mu.Unlock()
 
 	s.topics = make(map[string]map[int32][]*proto.Message)
+	s.offsets = make(map[string]map[int32]map[string]*topicOffset)
+}
+
+// Reset will clear out local messages and topics.
+func (s *Server) ResetTopic(topic string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.topics, topic)
+	delete(s.offsets, topic)
 }
 
 // Close shut down server if running. It is safe to call it more than once.
@@ -539,7 +550,7 @@ func (s *Server) handleOffsetFetchRequest(
 			respPart[pi].Metadata = toffset.metadata
 			respPart[pi].Offset = toffset.offset
 			log.Infof("requested committed offset for group %s from %s:%d, returning %d",
-				req.ConsumerGroup, topic.Name, part, toffset)
+				req.ConsumerGroup, topic.Name, part, toffset.offset)
 		}
 	}
 	return resp

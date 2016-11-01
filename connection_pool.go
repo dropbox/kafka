@@ -188,6 +188,7 @@ func (b *backend) Idle(conn *connection) {
 	default:
 		// In theory this can never happen because it means we allocated more connections than
 		// the ConnectionLimit allows.
+		log.Warningf("connection pool with excess connections, closing: %s", b.addr)
 		b.removeConnection(conn)
 		conn.Close()
 	}

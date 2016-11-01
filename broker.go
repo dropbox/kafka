@@ -350,7 +350,7 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 				// forget this endpoint so it will refresh metadata.
 				log.Warningf("[leaderConnection %s:%d] failed to connect to %s: %s",
 					topic, partition, addr, err)
-				//b.metadata.ForgetEndpoint(topic, partition)
+				b.metadata.ForgetEndpoint(topic, partition)
 			} else {
 				// Successful (supposedly) connection
 				return conn, nil

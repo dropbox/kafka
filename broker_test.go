@@ -1906,10 +1906,10 @@ func (s *BrokerSuite) TestOffsetCoordinator(c *C) {
 	setOffset := int64(-1)
 
 	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
-	srv.Handle(ConsumerMetadataRequest, func(request Serializable) Serializable {
-		req := request.(*proto.ConsumerMetadataReq)
+	srv.Handle(GroupCoordinatorRequest, func(request Serializable) Serializable {
+		req := request.(*proto.GroupCoordinatorReq)
 		host, port := srv.HostPort()
-		return &proto.ConsumerMetadataResp{
+		return &proto.GroupCoordinatorResp{
 			CorrelationID:   req.CorrelationID,
 			Err:             nil,
 			CoordinatorID:   1,
@@ -1989,9 +1989,9 @@ func (s *BrokerSuite) TestOffsetCoordinatorNoCoordinatorError(c *C) {
 	defer srv.Close()
 
 	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
-	srv.Handle(ConsumerMetadataRequest, func(request Serializable) Serializable {
-		req := request.(*proto.ConsumerMetadataReq)
-		return &proto.ConsumerMetadataResp{
+	srv.Handle(GroupCoordinatorRequest, func(request Serializable) Serializable {
+		req := request.(*proto.GroupCoordinatorReq)
+		return &proto.GroupCoordinatorResp{
 			CorrelationID:   req.CorrelationID,
 			Err:             proto.ErrNoCoordinator,
 			CoordinatorID:   0,

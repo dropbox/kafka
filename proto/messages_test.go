@@ -24,7 +24,7 @@ type Request interface {
 var _ Request = &MetadataReq{}
 var _ Request = &ProduceReq{}
 var _ Request = &FetchReq{}
-var _ Request = &ConsumerMetadataReq{}
+var _ Request = &GroupCoordinatorReq{}
 var _ Request = &OffsetReq{}
 var _ Request = &OffsetCommitReq{}
 var _ Request = &OffsetFetchReq{}

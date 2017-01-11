@@ -391,7 +391,7 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 
 		if conn != nil {
 			defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
-			resp, err := conn.ConsumerMetadata(&proto.ConsumerMetadataReq{
+			resp, err := conn.GroupCoordinator(&proto.GroupCoordinatorReq{
 				ClientID:      b.conf.ClientID,
 				ConsumerGroup: consumerGroup,
 			})

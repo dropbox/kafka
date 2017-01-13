@@ -84,7 +84,7 @@ func (b *backend) debugHitMaxConnections() {
 	log.Debugf("DEBUG: hit max connections (%d, %d, now %d times)",
 		b.counter, len(b.conns), b.debugNumHitMax)
 	for idx, conn := range b.conns {
-		log.Debugf("DEBUG: connection %d: addr=%s, closed=%s, age=%s",
+		log.Debugf("DEBUG: connection %d: addr=%s, closed=%v, age=%s",
 			idx, conn.addr, conn.IsClosed(), now.Sub(conn.StartTime()))
 	}
 }

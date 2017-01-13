@@ -321,7 +321,7 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
 		if try != 0 {
 			sleepFor := retry.Duration()
-			log.Debugf("cannot get leader connection for %s:%d: retry=%d, sleep=%f",
+			log.Debugf("cannot get leader connection for %s:%d: retry=%d, sleep=%s",
 				topic, partition, try, sleepFor)
 			time.Sleep(sleepFor)
 		}
@@ -390,24 +390,35 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, 
 		}
 
 		if conn != nil {
-			defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
-			resp, err := conn.GroupCoordinator(&proto.GroupCoordinatorReq{
-				ClientID:      b.conf.ClientID,
-				ConsumerGroup: consumerGroup,
-			})
+			// Run this in a closure so we can ensure we release the connection
+			// we're using to get the group coordinator. If we don't release it we
+			// can end up in a state where the connection pool is full and calling
+			// GetConnectionByAddr below blocks
+			resp, err := func() (*proto.GroupCoordinatorResp, error) {
+				defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
+
+				resp, err := conn.GroupCoordinator(&proto.GroupCoordinatorReq{
+					ClientID:      b.conf.ClientID,
+					ConsumerGroup: consumerGroup,
+				})
+				if err != nil {
+					log.Debugf("cannot fetch consumer metadata for %s: %s",
+						consumerGroup, err)
+					return nil, err
+				}
+				if resp.Err != nil {
+					log.Debugf("metadata response error for %s: %s",
+						consumerGroup, resp.Err)
+					return nil, resp.Err
+				}
+				return resp, nil
+			}()
 			if err != nil {
-				log.Debugf("cannot fetch consumer metadata for %s: %s",
-					consumerGroup, err)
 				resErr = err
 				continue
 			}
-			if resp.Err != nil {
-				log.Debugf("metadata response error for %s: %s",
-					consumerGroup, resp.Err)
-				resErr = resp.Err
-				continue
-			}
 
+			// Now get connection to actual coordinator
 			addr := fmt.Sprintf("%s:%d", resp.CoordinatorHost, resp.CoordinatorPort)
 			conn, err = b.conns.GetConnectionByAddr(addr)
 			if err != nil {
@@ -1079,7 +1090,10 @@ func (c *offsetCoordinator) commit(
 // Offset can retry sending request on common errors. This behaviour can be
 // configured with with RetryErrLimit and RetryErrWait coordinator
 // configuration attributes.
-func (c *offsetCoordinator) Offset(topic string, partition int32) (offset int64, metadata string, resErr error) {
+func (c *offsetCoordinator) Offset(
+	topic string, partition int32) (
+	offset int64, metadata string, resErr error) {
+
 	retry := &backoff.Backoff{Min: c.conf.RetryErrWait, Jitter: true}
 	for try := 0; try < c.conf.RetryErrLimit; try++ {
 		if try != 0 {

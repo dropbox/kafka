@@ -1,15 +1,14 @@
 language: go
 go:
-- 1.5.3
-- tip
-
+- 1.5
+- 1.6
+- 1.7
 
 before_install:
 - export REPOSITORY_ROOT=${TRAVIS_BUILD_DIR}
 
-
 script:
-- go test -v -p=1 -race -timeout=90s github.com/dropbox/kafka/...
+- go test -v -p=1 -race -timeout=120s github.com/dropbox/kafka/...
 - go vet github.com/dropbox/kafka/...
 - go test -bench '.*' -run none github.com/dropbox/kafka/...
 

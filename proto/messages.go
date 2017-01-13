@@ -828,11 +828,16 @@ func ReadOffsetCommitReq(r io.Reader) (*OffsetCommitReq, error) {
 
 	// total message size
 	_ = dec.DecodeInt32()
-	// api key + api version
-	_ = dec.DecodeInt32()
+	// api key
+	_ = dec.DecodeInt16()
+	apiVersion := dec.DecodeInt16()
 	req.CorrelationID = dec.DecodeInt32()
 	req.ClientID = dec.DecodeString()
 	req.ConsumerGroup = dec.DecodeString()
+	if apiVersion == 1 {
+		_ = dec.DecodeInt32()
+		_ = dec.DecodeString()
+	}
 	req.Topics = make([]OffsetCommitReqTopic, dec.DecodeArrayLen())
 	for ti := range req.Topics {
 		var topic = &req.Topics[ti]
@@ -860,11 +865,13 @@ func (r *OffsetCommitReq) Bytes() ([]byte, error) {
 	// message size - for now just placeholder
 	enc.Encode(int32(0))
 	enc.Encode(int16(OffsetCommitReqKind))
-	enc.Encode(int16(0))
+	enc.Encode(int16(1)) // version - must be 1 to use Kafka committed offsets instead of ZK
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 
 	enc.Encode(r.ConsumerGroup)
+	enc.Encode(int32(-1)) // ConsumerGroupGenerationId
+	enc.Encode("")        // ConsumerId
 
 	enc.EncodeArrayLen(len(r.Topics))
 	for _, topic := range r.Topics {
@@ -873,8 +880,7 @@ func (r *OffsetCommitReq) Bytes() ([]byte, error) {
 		for _, part := range topic.Partitions {
 			enc.Encode(part.ID)
 			enc.Encode(part.Offset)
-			// TODO(husio) is this really in milliseconds?
-			enc.Encode(part.TimeStamp.UnixNano() / int64(time.Millisecond))
+			enc.Encode(int64(0))
 			enc.Encode(part.Metadata)
 		}
 	}
@@ -1014,7 +1020,7 @@ func (r *OffsetFetchReq) Bytes() ([]byte, error) {
 	// message size - for now just placeholder
 	enc.Encode(int32(0))
 	enc.Encode(int16(OffsetFetchReqKind))
-	enc.Encode(int16(0))
+	enc.Encode(int16(1)) // version - must be 1 to use Kafka committed offsets instead of ZK
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 

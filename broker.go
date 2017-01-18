@@ -152,9 +152,12 @@ type BrokerConf struct {
 	MetadataRefreshFrequency time.Duration
 
 	// ConnectionLimit sets a limit on how many outstanding connections may exist to a
-	// single broker. This limit is for all connections in any state -- we will never use
-	// more than this many connections at a time. Setting this too low can limit your
-	// throughput, but setting it too high can cause problems for your cluster.
+	// single broker. This limit is for all connections except Metadata fetches which are exempted
+	// but separately limited to one per cluster. That is, the maximum number of connections per
+	// broker is ConnectionLimit + 1 but the maximum number of connections per cluster is
+	// NumBrokers * ConnectionLimit + 1 not NumBrokers * (ConnectionLimit + 1).
+	// Setting this too low can limit your throughput, but setting it too high can cause problems
+	// for your cluster.
 	//
 	// Defaults to 10.
 	ConnectionLimit int

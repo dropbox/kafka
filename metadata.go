@@ -145,19 +145,19 @@ func (cm *clusterMetadata) Fetch(topics ...string) (*proto.MetadataResp, error) 
 	addrs := cm.conns.GetAllAddrs()
 	log.Infof("metadata fetch addrs: %s", addrs)
 	for _, idx := range rndPerm(len(addrs)) {
-		conn, err := cm.conns.GetConnectionByAddr(addrs[idx])
+		// Directly connect, ignoring connection pool limits. This connection must be closed here.
+		conn, err := newTCPConnection(addrs[idx], cm.getTimeout())
 		if err != nil {
+			log.Warningf("metadata fetch failed to connect to node %s: %s", addrs[idx], err)
 			continue
 		}
-		defer func(lconn *connection) { go cm.conns.Idle(lconn) }(conn)
-
 		resp, err := conn.Metadata(&proto.MetadataReq{
 			ClientID: cm.conf.ClientID,
 			Topics:   topics,
 		})
+		conn.Close()
 		if err != nil {
-			log.Debugf("cannot fetch metadata from node %s: %s", addrs[idx], err)
-			conn.Close()
+			log.Warningf("cannot fetch metadata from node %s: %s", addrs[idx], err)
 			continue
 		}
 		return resp, nil

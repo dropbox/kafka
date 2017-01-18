@@ -121,41 +121,12 @@ func (b *backend) getNewConnection() (*connection, error) {
 		b.counter = len(newConns)
 	}
 
-	// Be careful about the situation where newTCPConnection could never return, so
-	// we want to always make sure getNewConnection eventually returns. Else, we can
-	// lose the connection pool.
-
-	type connResult struct {
-		conn *connection
-		err  error
+	conn, err := newTCPConnection(b.addr, b.conf.DialTimeout)
+	if err == nil {
+		b.counter++
+		b.conns = append(b.conns, conn)
 	}
-	connChan := make(chan connResult, 1)
-
-	go func() {
-		log.Debugf("making new connection: %s", b.addr)
-		if conn, err := newTCPConnection(b.addr, b.conf.DialTimeout); err != nil {
-			log.Errorf("cannot connect to %s: %s", b.addr, err)
-			connChan <- connResult{nil, err}
-		} else {
-			connChan <- connResult{conn, nil}
-		}
-	}()
-
-	select {
-	case <-time.After(b.conf.DialTimeout):
-		log.Errorf("DEBUG: timeout waiting for dial: %s", b.addr)
-		return nil, nil
-
-	case result := <-connChan:
-		if result.err != nil {
-			return nil, result.err
-		} else {
-			b.counter++
-			b.conns = append(b.conns, result.conn)
-			return result.conn, nil
-		}
-	}
-
+	return conn, err
 }
 
 // removeConnection removes the given connection from our tracking. It also decrements the

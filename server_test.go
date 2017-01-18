@@ -19,7 +19,7 @@ const (
 	MetadataRequest         = 3
 	OffsetCommitRequest     = 8
 	OffsetFetchRequest      = 9
-	ConsumerMetadataRequest = 10
+	GroupCoordinatorRequest = 10
 )
 
 type Serializable interface {
@@ -150,8 +150,8 @@ func (srv *Server) handleClient(c net.Conn) {
 			request, err = proto.ReadOffsetReq(bytes.NewBuffer(b))
 		case MetadataRequest:
 			request, err = proto.ReadMetadataReq(bytes.NewBuffer(b))
-		case ConsumerMetadataRequest:
-			request, err = proto.ReadConsumerMetadataReq(bytes.NewBuffer(b))
+		case GroupCoordinatorRequest:
+			request, err = proto.ReadGroupCoordinatorReq(bytes.NewBuffer(b))
 		case OffsetCommitRequest:
 			request, err = proto.ReadOffsetCommitReq(bytes.NewBuffer(b))
 		case OffsetFetchRequest:
@@ -255,7 +255,7 @@ func (srv *Server) defaultRequestHandler(request Serializable) Serializable {
 			},
 			Topics: []proto.MetadataRespTopic{},
 		}
-	case *proto.ConsumerMetadataReq:
+	case *proto.GroupCoordinatorReq:
 		panic("not implemented")
 	case *proto.OffsetCommitReq:
 		panic("not implemented")

@@ -329,13 +329,13 @@ func (s *Server) handleClient(nodeID int32, conn net.Conn) {
 					return
 				}
 				resp = s.handleOffsetFetchRequest(nodeID, conn, req)
-			case proto.ConsumerMetadataReqKind:
-				req, err := proto.ReadConsumerMetadataReq(bytes.NewBuffer(b))
+			case proto.GroupCoordinatorReqKind:
+				req, err := proto.ReadGroupCoordinatorReq(bytes.NewBuffer(b))
 				if err != nil {
 					log.Errorf("cannot parse consumer metadata request: %s\n%s", err, b)
 					return
 				}
-				resp = s.handleConsumerMetadataRequest(nodeID, conn, req)
+				resp = s.handleGroupCoordinatorRequest(nodeID, conn, req)
 			default:
 				log.Errorf("unknown request: %d\n%s", kind, b)
 				return
@@ -489,18 +489,23 @@ func (s *Server) handleOffsetRequest(
 	return resp
 }
 
-func (s *Server) handleConsumerMetadataRequest(
-	nodeID int32, conn net.Conn, req *proto.ConsumerMetadataReq) response {
+func (s *Server) handleGroupCoordinatorRequest(
+	nodeID int32, conn net.Conn, req *proto.GroupCoordinatorReq) response {
+
+	// Fetches the read-lock, so try not to do this inside our own RLock
+	// as that can lead to deadlock state if someone happens to try to Lock
+	// while we're inside the first RLock
+	addr := s.Addr()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	log.Infof("requested consumer metadata")
 
-	addrps := strings.Split(s.Addr(), ":")
+	addrps := strings.Split(addr, ":")
 	port, _ := strconv.Atoi(addrps[1])
 
-	return &proto.ConsumerMetadataResp{
+	return &proto.GroupCoordinatorResp{
 		CorrelationID:   req.CorrelationID,
 		CoordinatorID:   0,
 		CoordinatorHost: addrps[0],

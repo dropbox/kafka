@@ -28,7 +28,7 @@ const (
 	MetadataReqKind         = 3
 	OffsetCommitReqKind     = 8
 	OffsetFetchReqKind      = 9
-	ConsumerMetadataReqKind = 10
+	GroupCoordinatorReqKind = 10
 
 	// receive the latest offset (i.e. the offset of the next coming message)
 	OffsetReqTimeLatest = -1
@@ -697,14 +697,14 @@ func ReadFetchResp(r io.Reader) (*FetchResp, error) {
 	return &resp, nil
 }
 
-type ConsumerMetadataReq struct {
+type GroupCoordinatorReq struct {
 	CorrelationID int32
 	ClientID      string
 	ConsumerGroup string
 }
 
-func ReadConsumerMetadataReq(r io.Reader) (*ConsumerMetadataReq, error) {
-	var req ConsumerMetadataReq
+func ReadGroupCoordinatorReq(r io.Reader) (*GroupCoordinatorReq, error) {
+	var req GroupCoordinatorReq
 	dec := NewDecoder(r)
 
 	// total message size
@@ -721,13 +721,13 @@ func ReadConsumerMetadataReq(r io.Reader) (*ConsumerMetadataReq, error) {
 	return &req, nil
 }
 
-func (r *ConsumerMetadataReq) Bytes() ([]byte, error) {
+func (r *GroupCoordinatorReq) Bytes() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := NewEncoder(&buf)
 
 	// message size - for now just placeholder
 	enc.Encode(int32(0))
-	enc.Encode(int16(ConsumerMetadataReqKind))
+	enc.Encode(int16(GroupCoordinatorReqKind))
 	enc.Encode(int16(0))
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
@@ -745,7 +745,7 @@ func (r *ConsumerMetadataReq) Bytes() ([]byte, error) {
 	return b, nil
 }
 
-func (r *ConsumerMetadataReq) WriteTo(w io.Writer) (int64, error) {
+func (r *GroupCoordinatorReq) WriteTo(w io.Writer) (int64, error) {
 	b, err := r.Bytes()
 	if err != nil {
 		return 0, err
@@ -754,7 +754,7 @@ func (r *ConsumerMetadataReq) WriteTo(w io.Writer) (int64, error) {
 	return int64(n), err
 }
 
-type ConsumerMetadataResp struct {
+type GroupCoordinatorResp struct {
 	CorrelationID   int32
 	Err             error
 	CoordinatorID   int32
@@ -762,8 +762,8 @@ type ConsumerMetadataResp struct {
 	CoordinatorPort int32
 }
 
-func ReadConsumerMetadataResp(r io.Reader) (*ConsumerMetadataResp, error) {
-	var resp ConsumerMetadataResp
+func ReadGroupCoordinatorResp(r io.Reader) (*GroupCoordinatorResp, error) {
+	var resp GroupCoordinatorResp
 	dec := NewDecoder(r)
 
 	// total message size
@@ -780,7 +780,7 @@ func ReadConsumerMetadataResp(r io.Reader) (*ConsumerMetadataResp, error) {
 	return &resp, nil
 }
 
-func (r *ConsumerMetadataResp) Bytes() ([]byte, error) {
+func (r *GroupCoordinatorResp) Bytes() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := NewEncoder(&buf)
 
@@ -828,11 +828,16 @@ func ReadOffsetCommitReq(r io.Reader) (*OffsetCommitReq, error) {
 
 	// total message size
 	_ = dec.DecodeInt32()
-	// api key + api version
-	_ = dec.DecodeInt32()
+	// api key
+	_ = dec.DecodeInt16()
+	apiVersion := dec.DecodeInt16()
 	req.CorrelationID = dec.DecodeInt32()
 	req.ClientID = dec.DecodeString()
 	req.ConsumerGroup = dec.DecodeString()
+	if apiVersion == 1 {
+		_ = dec.DecodeInt32()
+		_ = dec.DecodeString()
+	}
 	req.Topics = make([]OffsetCommitReqTopic, dec.DecodeArrayLen())
 	for ti := range req.Topics {
 		var topic = &req.Topics[ti]
@@ -860,11 +865,13 @@ func (r *OffsetCommitReq) Bytes() ([]byte, error) {
 	// message size - for now just placeholder
 	enc.Encode(int32(0))
 	enc.Encode(int16(OffsetCommitReqKind))
-	enc.Encode(int16(0))
+	enc.Encode(int16(1)) // version - must be 1 to use Kafka committed offsets instead of ZK
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 
 	enc.Encode(r.ConsumerGroup)
+	enc.Encode(int32(-1)) // ConsumerGroupGenerationId
+	enc.Encode("")        // ConsumerId
 
 	enc.EncodeArrayLen(len(r.Topics))
 	for _, topic := range r.Topics {
@@ -873,8 +880,7 @@ func (r *OffsetCommitReq) Bytes() ([]byte, error) {
 		for _, part := range topic.Partitions {
 			enc.Encode(part.ID)
 			enc.Encode(part.Offset)
-			// TODO(husio) is this really in milliseconds?
-			enc.Encode(part.TimeStamp.UnixNano() / int64(time.Millisecond))
+			enc.Encode(int64(0))
 			enc.Encode(part.Metadata)
 		}
 	}
@@ -1014,7 +1020,7 @@ func (r *OffsetFetchReq) Bytes() ([]byte, error) {
 	// message size - for now just placeholder
 	enc.Encode(int32(0))
 	enc.Encode(int16(OffsetFetchReqKind))
-	enc.Encode(int16(0))
+	enc.Encode(int16(1)) // version - must be 1 to use Kafka committed offsets instead of ZK
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 

@@ -324,7 +324,7 @@ func (c *connection) Offset(req *proto.OffsetReq) (*proto.OffsetResp, error) {
 	return proto.ReadOffsetResp(bytes.NewReader(b))
 }
 
-func (c *connection) ConsumerMetadata(req *proto.ConsumerMetadataReq) (*proto.ConsumerMetadataResp, error) {
+func (c *connection) GroupCoordinator(req *proto.GroupCoordinatorReq) (*proto.GroupCoordinatorResp, error) {
 	var ok bool
 	if req.CorrelationID, ok = <-c.nextID; !ok {
 		return nil, c.stopErr
@@ -344,7 +344,7 @@ func (c *connection) ConsumerMetadata(req *proto.ConsumerMetadataReq) (*proto.Co
 	if !ok {
 		return nil, c.stopErr
 	}
-	return proto.ReadConsumerMetadataResp(bytes.NewReader(b))
+	return proto.ReadGroupCoordinatorResp(bytes.NewReader(b))
 }
 
 func (c *connection) OffsetCommit(req *proto.OffsetCommitReq) (*proto.OffsetCommitResp, error) {

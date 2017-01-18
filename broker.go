@@ -363,87 +363,73 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 	return nil, proto.ErrUnknownTopicOrPartition
 }
 
-// coordinatorConnection returns connection to offset coordinator for given group. NOTE:
-// this function returns a connection and it is the caller's responsibility to ensure
-// that this connection is eventually returned to the pool with Idle.
+// coordinatorConnection returns connection to offset coordinator for given group. May
+// return proto.ErrNoCoordinator if we are unable to find a broker to talk to. May also
+// return other errors (connection errors, ErrNoTopic, etc).
 //
-// Failed connection retry is controlled by broker configuration.
-func (b *Broker) coordinatorConnection(consumerGroup string) (conn *connection, resErr error) {
-	addrs := b.conns.GetAllAddrs()
-	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
-	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
-		if try != 0 {
-			time.Sleep(retry.Duration())
-		}
+// NOTE: this function returns a connection and it is the caller's responsibility to ensure
+// that this connection is eventually returned to the pool with Idle.
+func (b *Broker) coordinatorConnection(consumerGroup string) (*connection, error) {
+	// Get group coordinator
+	resp, err := b.getGroupCoordinator(consumerGroup)
+	if err != nil {
+		log.Warningf("coordinatorConnection: failed to discover coordinator: %s", err)
+		return nil, proto.ErrNoCoordinator
+	}
 
-		// First try an idle connection
-		conn := b.conns.GetIdleConnection()
-		if conn == nil {
-			for _, idx := range rndPerm(len(addrs)) {
-				var err error
-				conn, err = b.conns.GetConnectionByAddr(addrs[idx])
-				if err == nil {
-					// No error == have a nice connection.
-					break
-				}
+	// Now get connection to actual coordinator
+	addr := fmt.Sprintf("%s:%d", resp.CoordinatorHost, resp.CoordinatorPort)
+	conn, err := b.conns.GetConnectionByAddr(addr)
+	if err != nil {
+		log.Errorf("coordinatorConnection: failed to reach node %d at %s: %s",
+			resp.CoordinatorID, addr, err)
+		return nil, proto.ErrNoCoordinator
+	}
+
+	// Return to caller, they must ensure Idle is eventually called
+	return conn, nil
+}
+
+// getGroupCoordinator is an internal function that fetches a group coordinator.
+func (b *Broker) getGroupCoordinator(consumerGroup string) (*proto.GroupCoordinatorResp, error) {
+	// Attempt to get idle connection first, else, try all possible brokers
+	// randomly permuted
+	conn := b.conns.GetIdleConnection()
+	if conn == nil {
+		addrs := b.conns.GetAllAddrs()
+		for _, idx := range rndPerm(len(addrs)) {
+			var err error
+			conn, err = b.conns.GetConnectionByAddr(addrs[idx])
+			if err == nil {
+				// No error == have a nice connection.
+				break
 			}
-		}
-
-		if conn != nil {
-			// Run this in a closure so we can ensure we release the connection
-			// we're using to get the group coordinator. If we don't release it we
-			// can end up in a state where the connection pool is full and calling
-			// GetConnectionByAddr below blocks
-			resp, err := func() (*proto.GroupCoordinatorResp, error) {
-				defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
-
-				resp, err := conn.GroupCoordinator(&proto.GroupCoordinatorReq{
-					ClientID:      b.conf.ClientID,
-					ConsumerGroup: consumerGroup,
-				})
-				if err != nil {
-					log.Debugf("cannot fetch consumer metadata for %s: %s",
-						consumerGroup, err)
-					return nil, err
-				}
-				if resp.Err != nil {
-					log.Debugf("metadata response error for %s: %s",
-						consumerGroup, resp.Err)
-					return nil, resp.Err
-				}
-				return resp, nil
-			}()
-			if err != nil {
-				resErr = err
-				continue
-			}
-
-			// Now get connection to actual coordinator
-			addr := fmt.Sprintf("%s:%d", resp.CoordinatorHost, resp.CoordinatorPort)
-			conn, err = b.conns.GetConnectionByAddr(addr)
-			if err != nil {
-				log.Debugf("cannot connect to coordinator node %d at %s: %s",
-					resp.CoordinatorID, addr, err)
-				resErr = err
-				continue
-			}
-
-			// Return to caller, they must ensure Idle is eventually called
-			return conn, nil
-		}
-
-		// Current error state
-		resErr = proto.ErrNoCoordinator
-
-		// Refresh metadata. At this point it looks like none of the connections worked, so
-		// possibly we need a new set.
-		if err := b.metadata.Refresh(); err != nil {
-			log.Debugf("cannot refresh metadata: %s", err)
-			resErr = err
-			continue
 		}
 	}
-	return nil, resErr
+	if conn == nil {
+		log.Warningf("coordinatorConnection: failed to connect to any broker")
+		return nil, errors.New("failed to connect to any broker")
+	}
+
+	// Ensure we release this connection
+	defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
+
+	// Now fetch coordinator from this broker
+	resp, err := conn.GroupCoordinator(&proto.GroupCoordinatorReq{
+		ClientID:      b.conf.ClientID,
+		ConsumerGroup: consumerGroup,
+	})
+	if err != nil {
+		log.Errorf("coordinatorConnection: metadata error for %s: %s",
+			consumerGroup, err)
+		return nil, err
+	}
+	if resp.Err != nil {
+		log.Errorf("coordinatorConnection: metadata response error for %s: %s",
+			consumerGroup, resp.Err)
+		return nil, resp.Err
+	}
+	return resp, nil
 }
 
 // offset will return offset value for given partition. Use timems to specify

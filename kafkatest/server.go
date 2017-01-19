@@ -550,12 +550,12 @@ func (s *Server) handleOffsetFetchRequest(
 		resp.Topics[ti].Name = topic.Name
 		resp.Topics[ti].Partitions = respPart
 		for pi, part := range topic.Partitions {
-			toffset := s.getTopicOffset(req.ConsumerGroup, topic.Name, part)
+			toffset := s.getTopicOffset(req.GroupID, topic.Name, part)
 			respPart[pi].ID = part
 			respPart[pi].Metadata = toffset.metadata
 			respPart[pi].Offset = toffset.offset
 			log.Infof("requested committed offset for group %s from %s:%d, returning %d",
-				req.ConsumerGroup, topic.Name, part, toffset.offset)
+				req.GroupID, topic.Name, part, toffset.offset)
 		}
 	}
 	return resp
@@ -576,13 +576,13 @@ func (s *Server) handleOffsetCommitRequest(
 		resp.Topics[ti].Name = topic.Name
 		resp.Topics[ti].Partitions = respPart
 		for pi, part := range topic.Partitions {
-			toffset := s.getTopicOffset(req.ConsumerGroup, topic.Name, part.ID)
+			toffset := s.getTopicOffset(req.GroupID, topic.Name, part.ID)
 			toffset.metadata = part.Metadata
 			toffset.offset = part.Offset
 
 			respPart[pi].ID = part.ID
 			log.Infof("committed offset for group %s from %s:%d, saved %d",
-				req.ConsumerGroup, topic.Name, part.ID, part.Offset)
+				req.GroupID, topic.Name, part.ID, part.Offset)
 		}
 	}
 	return resp

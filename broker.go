@@ -419,8 +419,8 @@ func (b *Broker) getGroupCoordinator(consumerGroup string) (*proto.GroupCoordina
 
 	// Now fetch coordinator from this broker
 	resp, err := conn.GroupCoordinator(&proto.GroupCoordinatorReq{
-		ClientID:      b.conf.ClientID,
-		ConsumerGroup: consumerGroup,
+		ClientID: b.conf.ClientID,
+		GroupID:  consumerGroup,
 	})
 	if err != nil {
 		log.Errorf("coordinatorConnection: metadata error for %s: %s",
@@ -964,7 +964,7 @@ consumeRetryLoop:
 }
 
 type OffsetCoordinatorConf struct {
-	ConsumerGroup string
+	GroupID string
 
 	// RetryErrLimit limits messages fetch retry upon failure. By default 10.
 	RetryErrLimit int
@@ -977,7 +977,7 @@ type OffsetCoordinatorConf struct {
 // NewOffsetCoordinatorConf returns default OffsetCoordinator configuration.
 func NewOffsetCoordinatorConf(consumerGroup string) OffsetCoordinatorConf {
 	return OffsetCoordinatorConf{
-		ConsumerGroup: consumerGroup,
+		GroupID:       consumerGroup,
 		RetryErrLimit: 10,
 		RetryErrWait:  time.Millisecond * 500,
 	}
@@ -1029,7 +1029,7 @@ func (c *offsetCoordinator) commit(
 
 		// get a copy of our connection with the lock, this might establish a new
 		// connection so can take a bit
-		conn, err := c.broker.coordinatorConnection(c.conf.ConsumerGroup)
+		conn, err := c.broker.coordinatorConnection(c.conf.GroupID)
 		if conn == nil {
 			resErr = err
 			continue
@@ -1037,8 +1037,8 @@ func (c *offsetCoordinator) commit(
 		defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.OffsetCommit(&proto.OffsetCommitReq{
-			ClientID:      c.broker.conf.ClientID,
-			ConsumerGroup: c.conf.ConsumerGroup,
+			ClientID: c.broker.conf.ClientID,
+			GroupID:  c.conf.GroupID,
 			Topics: []proto.OffsetCommitReqTopic{
 				{
 					Name: topic,
@@ -1052,7 +1052,7 @@ func (c *offsetCoordinator) commit(
 
 		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
 			log.Debugf("connection died while committing on %s:%d for %s: %s",
-				topic, partition, c.conf.ConsumerGroup, err)
+				topic, partition, c.conf.GroupID, err)
 			conn.Close()
 
 		} else if err == nil {
@@ -1091,7 +1091,7 @@ func (c *offsetCoordinator) Offset(
 
 		// get a copy of our connection with the lock, this might establish a new
 		// connection so can take a bit
-		conn, err := c.broker.coordinatorConnection(c.conf.ConsumerGroup)
+		conn, err := c.broker.coordinatorConnection(c.conf.GroupID)
 		if conn == nil {
 			resErr = err
 			continue
@@ -1099,7 +1099,7 @@ func (c *offsetCoordinator) Offset(
 		defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
 
 		resp, err := conn.OffsetFetch(&proto.OffsetFetchReq{
-			ConsumerGroup: c.conf.ConsumerGroup,
+			GroupID: c.conf.GroupID,
 			Topics: []proto.OffsetFetchReqTopic{
 				{
 					Name:       topic,
@@ -1112,7 +1112,7 @@ func (c *offsetCoordinator) Offset(
 		switch err {
 		case io.EOF, syscall.EPIPE:
 			log.Debugf("connection died while fetching offsets on %s:%d for %s: %s",
-				topic, partition, c.conf.ConsumerGroup, err)
+				topic, partition, c.conf.GroupID, err)
 			conn.Close()
 
 		case nil:

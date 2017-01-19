@@ -223,7 +223,7 @@ type OffsetCoordinator struct {
 // further use.
 func (c *OffsetCoordinator) Commit(topic string, partition int32, offset int64) error {
 	if c.CommitHandler != nil {
-		return c.CommitHandler(c.conf.ConsumerGroup, topic, partition, offset)
+		return c.CommitHandler(c.conf.GroupID, topic, partition, offset)
 	}
 	c.Offsets[fmt.Sprintf("%s:%d", topic, partition)] = offset
 	return nil
@@ -235,7 +235,7 @@ func (c *OffsetCoordinator) Commit(topic string, partition int32, offset int64) 
 // proto.ErrUnknownTopicOrPartition is returned.
 func (c *OffsetCoordinator) Offset(topic string, partition int32) (offset int64, metadata string, err error) {
 	if c.OffsetHandler != nil {
-		return c.OffsetHandler(c.conf.ConsumerGroup, topic, partition)
+		return c.OffsetHandler(c.conf.GroupID, topic, partition)
 	}
 	off, ok := c.Offsets[fmt.Sprintf("%s:%d", topic, partition)]
 	if !ok {

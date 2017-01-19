@@ -28,6 +28,12 @@ var _ Request = &GroupCoordinatorReq{}
 var _ Request = &OffsetReq{}
 var _ Request = &OffsetCommitReq{}
 var _ Request = &OffsetFetchReq{}
+var _ Request = &JoinGroupReq{}
+var _ Request = &HeartbeatReq{}
+var _ Request = &LeaveGroupReq{}
+var _ Request = &SyncGroupReq{}
+var _ Request = &DescribeGroupsReq{}
+var _ Request = &ListGroupsReq{}
 
 func testRequestSerialization(c *C, r Request) {
 	var buf bytes.Buffer

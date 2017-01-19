@@ -29,6 +29,12 @@ const (
 	OffsetCommitReqKind     = 8
 	OffsetFetchReqKind      = 9
 	GroupCoordinatorReqKind = 10
+	JoinGroupReqKind        = 11
+	HeartbeatReqKind        = 12
+	LeaveGroupReqKind       = 13
+	SyncGroupReqKind        = 14
+	DescribeGroupsReqKind   = 15
+	ListGroupsReqKind       = 16
 
 	// receive the latest offset (i.e. the offset of the next coming message)
 	OffsetReqTimeLatest = -1
@@ -700,7 +706,7 @@ func ReadFetchResp(r io.Reader) (*FetchResp, error) {
 type GroupCoordinatorReq struct {
 	CorrelationID int32
 	ClientID      string
-	ConsumerGroup string
+	GroupID       string
 }
 
 func ReadGroupCoordinatorReq(r io.Reader) (*GroupCoordinatorReq, error) {
@@ -713,7 +719,7 @@ func ReadGroupCoordinatorReq(r io.Reader) (*GroupCoordinatorReq, error) {
 	_ = dec.DecodeInt32()
 	req.CorrelationID = dec.DecodeInt32()
 	req.ClientID = dec.DecodeString()
-	req.ConsumerGroup = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
 
 	if dec.Err() != nil {
 		return nil, dec.Err()
@@ -732,7 +738,7 @@ func (r *GroupCoordinatorReq) Bytes() ([]byte, error) {
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 
-	enc.Encode(r.ConsumerGroup)
+	enc.Encode(r.GroupID)
 
 	if enc.Err() != nil {
 		return nil, enc.Err()
@@ -803,10 +809,747 @@ func (r *GroupCoordinatorResp) Bytes() ([]byte, error) {
 	return b, nil
 }
 
+type JoinGroupReqProtocol struct {
+	Name     string
+	Metadata []byte
+}
+
+// v0 request, supported in 0.9+, note that v1 exists but is not supported
+// until sometime in the 0.10 series
+type JoinGroupReq struct {
+	CorrelationID  int32
+	ClientID       string
+	GroupID        string
+	SessionTimeout int32
+	MemberID       string
+	PrototocolType string
+	GroupProtocols []JoinGroupReqProtocol
+}
+
+func ReadJoinGroupReq(r io.Reader) (*JoinGroupReq, error) {
+	var req JoinGroupReq
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	// api key + api version
+	_ = dec.DecodeInt32()
+	req.CorrelationID = dec.DecodeInt32()
+	req.ClientID = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
+	req.SessionTimeout = dec.DecodeInt32()
+	req.MemberID = dec.DecodeString()
+	req.PrototocolType = dec.DecodeString()
+	req.GroupProtocols = make([]JoinGroupReqProtocol, dec.DecodeArrayLen())
+	for idx := range req.GroupProtocols {
+		group := req.GroupProtocols[idx]
+		group.Name = dec.DecodeString()
+		group.Metadata = dec.DecodeBytes()
+	}
+
+	if dec.Err() != nil {
+		return nil, dec.Err()
+	}
+	return &req, nil
+}
+
+func (r *JoinGroupReq) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(int16(JoinGroupReqKind))
+	enc.Encode(int16(0))
+	enc.Encode(r.CorrelationID)
+	enc.Encode(r.ClientID)
+	enc.Encode(r.GroupID)
+	enc.Encode(r.SessionTimeout)
+	enc.Encode(r.MemberID)
+	enc.Encode(r.PrototocolType)
+	enc.EncodeArrayLen(len(r.GroupProtocols))
+	for _, group := range r.GroupProtocols {
+		enc.Encode(group.Name)
+		enc.Encode(group.Metadata)
+	}
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+func (r *JoinGroupReq) WriteTo(w io.Writer) (int64, error) {
+	b, err := r.Bytes()
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type JoinGroupRespMember struct {
+	ID       string
+	Metadata []byte
+}
+
+// v0 version, there is also a v1. same as in JoinGroupReq.
+type JoinGroupResp struct {
+	CorrelationID int32
+	Err           error
+	GenerationID  int32
+	GroupProtocol string
+	LeaderID      string
+	MemberID      string
+	Members       []JoinGroupRespMember
+}
+
+func ReadJoinGroupResp(r io.Reader) (*JoinGroupResp, error) {
+	var resp JoinGroupResp
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	resp.CorrelationID = dec.DecodeInt32()
+	resp.Err = errFromNo(dec.DecodeInt16())
+	resp.GenerationID = dec.DecodeInt32()
+	resp.GroupProtocol = dec.DecodeString()
+	resp.LeaderID = dec.DecodeString()
+	resp.MemberID = dec.DecodeString()
+	resp.Members = make([]JoinGroupRespMember, dec.DecodeArrayLen())
+	for idx := range resp.Members {
+		member := resp.Members[idx]
+		member.ID = dec.DecodeString()
+		member.Metadata = dec.DecodeBytes()
+	}
+
+	if err := dec.Err(); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (r *JoinGroupResp) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeError(r.Err)
+	enc.Encode(r.GenerationID)
+	enc.Encode(r.GroupProtocol)
+	enc.Encode(r.LeaderID)
+	enc.Encode(r.MemberID)
+	enc.EncodeArrayLen(len(r.Members))
+	for _, member := range r.Members {
+		enc.Encode(member.ID)
+		enc.Encode(member.Metadata)
+	}
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+type HeartbeatReq struct {
+	CorrelationID int32
+	ClientID      string
+	GroupID       string
+	GenerationID  int32
+	MemberID      string
+}
+
+func ReadHeartbeatReq(r io.Reader) (*HeartbeatReq, error) {
+	var req HeartbeatReq
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	// api key + api version
+	_ = dec.DecodeInt32()
+	req.CorrelationID = dec.DecodeInt32()
+	req.ClientID = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
+	req.GenerationID = dec.DecodeInt32()
+	req.MemberID = dec.DecodeString()
+
+	if dec.Err() != nil {
+		return nil, dec.Err()
+	}
+	return &req, nil
+}
+
+func (r *HeartbeatReq) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(int16(HeartbeatReqKind))
+	enc.Encode(int16(0))
+	enc.Encode(r.CorrelationID)
+	enc.Encode(r.ClientID)
+	enc.Encode(r.GroupID)
+	enc.Encode(r.GenerationID)
+	enc.Encode(r.MemberID)
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+func (r *HeartbeatReq) WriteTo(w io.Writer) (int64, error) {
+	b, err := r.Bytes()
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type HeartbeatResp struct {
+	CorrelationID int32
+	Err           error
+}
+
+func ReadHeartbeatResp(r io.Reader) (*HeartbeatResp, error) {
+	var resp HeartbeatResp
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	resp.CorrelationID = dec.DecodeInt32()
+	resp.Err = errFromNo(dec.DecodeInt16())
+
+	if err := dec.Err(); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (r *HeartbeatResp) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeError(r.Err)
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+type LeaveGroupReq struct {
+	CorrelationID int32
+	ClientID      string
+	GroupID       string
+	MemberID      string
+}
+
+func ReadLeaveGroupReq(r io.Reader) (*LeaveGroupReq, error) {
+	var req LeaveGroupReq
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	// api key + api version
+	_ = dec.DecodeInt32()
+	req.CorrelationID = dec.DecodeInt32()
+	req.ClientID = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
+	req.MemberID = dec.DecodeString()
+
+	if dec.Err() != nil {
+		return nil, dec.Err()
+	}
+	return &req, nil
+}
+
+func (r *LeaveGroupReq) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(int16(LeaveGroupReqKind))
+	enc.Encode(int16(0))
+	enc.Encode(r.CorrelationID)
+	enc.Encode(r.ClientID)
+	enc.Encode(r.GroupID)
+	enc.Encode(r.MemberID)
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+func (r *LeaveGroupReq) WriteTo(w io.Writer) (int64, error) {
+	b, err := r.Bytes()
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type LeaveGroupResp struct {
+	CorrelationID int32
+	Err           error
+}
+
+func ReadLeaveGroupResp(r io.Reader) (*LeaveGroupResp, error) {
+	var resp LeaveGroupResp
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	resp.CorrelationID = dec.DecodeInt32()
+	resp.Err = errFromNo(dec.DecodeInt16())
+
+	if err := dec.Err(); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (r *LeaveGroupResp) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeError(r.Err)
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+type SyncGroupReqAssignment struct {
+	ID         string
+	Assignment []byte
+}
+
+type SyncGroupReq struct {
+	CorrelationID int32
+	ClientID      string
+	GroupID       string
+	GenerationID  int32
+	MemberID      string
+	Assignments   []SyncGroupReqAssignment
+}
+
+func ReadSyncGroupReq(r io.Reader) (*SyncGroupReq, error) {
+	var req SyncGroupReq
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	// api key + api version
+	_ = dec.DecodeInt32()
+	req.CorrelationID = dec.DecodeInt32()
+	req.ClientID = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
+	req.GenerationID = dec.DecodeInt32()
+	req.MemberID = dec.DecodeString()
+	req.Assignments = make([]SyncGroupReqAssignment, dec.DecodeArrayLen())
+	for idx := range req.Assignments {
+		assignment := req.Assignments[idx]
+		assignment.ID = dec.DecodeString()
+		assignment.Assignment = dec.DecodeBytes()
+	}
+
+	if dec.Err() != nil {
+		return nil, dec.Err()
+	}
+	return &req, nil
+}
+
+func (r *SyncGroupReq) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(int16(SyncGroupReqKind))
+	enc.Encode(int16(0))
+	enc.Encode(r.CorrelationID)
+	enc.Encode(r.ClientID)
+	enc.Encode(r.GroupID)
+	enc.Encode(r.GenerationID)
+	enc.Encode(r.MemberID)
+	enc.EncodeArrayLen(len(r.Assignments))
+	for _, assignment := range r.Assignments {
+		enc.Encode(assignment.ID)
+		enc.Encode(assignment.Assignment)
+	}
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+func (r *SyncGroupReq) WriteTo(w io.Writer) (int64, error) {
+	b, err := r.Bytes()
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type SyncGroupResp struct {
+	CorrelationID int32
+	Err           error
+	Assignment    []byte
+}
+
+func ReadSyncGroupResp(r io.Reader) (*SyncGroupResp, error) {
+	var resp SyncGroupResp
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	resp.CorrelationID = dec.DecodeInt32()
+	resp.Err = errFromNo(dec.DecodeInt16())
+	resp.Assignment = dec.DecodeBytes()
+
+	if err := dec.Err(); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (r *SyncGroupResp) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeError(r.Err)
+	enc.Encode(r.Assignment)
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+type DescribeGroupsReq struct {
+	CorrelationID int32
+	ClientID      string
+	GroupIDs      []string
+}
+
+func ReadDescribeGroupsReq(r io.Reader) (*DescribeGroupsReq, error) {
+	var req DescribeGroupsReq
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	// api key + api version
+	_ = dec.DecodeInt32()
+	req.CorrelationID = dec.DecodeInt32()
+	req.ClientID = dec.DecodeString()
+	req.GroupIDs = make([]string, dec.DecodeArrayLen())
+	for idx := range req.GroupIDs {
+		req.GroupIDs[idx] = dec.DecodeString()
+	}
+
+	if dec.Err() != nil {
+		return nil, dec.Err()
+	}
+	return &req, nil
+}
+
+func (r *DescribeGroupsReq) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(int16(DescribeGroupsReqKind))
+	enc.Encode(int16(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeArrayLen(len(r.GroupIDs))
+	for _, groupID := range r.GroupIDs {
+		enc.EncodeString(groupID)
+	}
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+func (r *DescribeGroupsReq) WriteTo(w io.Writer) (int64, error) {
+	b, err := r.Bytes()
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type DescribeGroupsRespGroupMember struct {
+	ID         string
+	ClientID   string
+	ClientHost string
+	Metadata   []byte
+	Assignment []byte
+}
+
+type DescribeGroupsRespGroup struct {
+	Err          error
+	ID           string
+	State        string
+	ProtocolType string
+	Protocol     string
+	Members      []DescribeGroupsRespGroupMember
+}
+
+type DescribeGroupsResp struct {
+	CorrelationID int32
+	Groups        []DescribeGroupsRespGroup
+}
+
+func ReadDescribeGroupsResp(r io.Reader) (*DescribeGroupsResp, error) {
+	var resp DescribeGroupsResp
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	resp.CorrelationID = dec.DecodeInt32()
+	resp.Groups = make([]DescribeGroupsRespGroup, dec.DecodeArrayLen())
+	for idx := range resp.Groups {
+		group := resp.Groups[idx]
+		group.Err = errFromNo(dec.DecodeInt16())
+		group.ID = dec.DecodeString()
+		group.State = dec.DecodeString()
+		group.ProtocolType = dec.DecodeString()
+		group.Protocol = dec.DecodeString()
+		group.Members = make([]DescribeGroupsRespGroupMember, dec.DecodeArrayLen())
+		for midx := range group.Members {
+			member := group.Members[midx]
+			member.ID = dec.DecodeString()
+			member.ClientID = dec.DecodeString()
+			member.ClientHost = dec.DecodeString()
+			member.Metadata = dec.DecodeBytes()
+			member.Assignment = dec.DecodeBytes()
+		}
+	}
+
+	if err := dec.Err(); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (r *DescribeGroupsResp) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeArrayLen(len(r.Groups))
+	for _, group := range r.Groups {
+		enc.EncodeError(group.Err)
+		enc.Encode(group.ID)
+		enc.Encode(group.State)
+		enc.Encode(group.ProtocolType)
+		enc.Encode(group.Protocol)
+		enc.EncodeArrayLen(len(group.Members))
+		for _, member := range group.Members {
+			enc.Encode(member.ID)
+			enc.Encode(member.ClientID)
+			enc.Encode(member.ClientHost)
+			enc.Encode(member.Metadata)
+			enc.Encode(member.Assignment)
+		}
+	}
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+type ListGroupsReq struct {
+	CorrelationID int32
+	ClientID      string
+}
+
+func ReadListGroupsReq(r io.Reader) (*ListGroupsReq, error) {
+	var req ListGroupsReq
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	// api key + api version
+	_ = dec.DecodeInt32()
+	req.CorrelationID = dec.DecodeInt32()
+	req.ClientID = dec.DecodeString()
+
+	if dec.Err() != nil {
+		return nil, dec.Err()
+	}
+	return &req, nil
+}
+
+func (r *ListGroupsReq) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(int16(ListGroupsReqKind))
+	enc.Encode(int16(0))
+	enc.Encode(r.CorrelationID)
+	enc.Encode(r.ClientID)
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
+func (r *ListGroupsReq) WriteTo(w io.Writer) (int64, error) {
+	b, err := r.Bytes()
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.Write(b)
+	return int64(n), err
+}
+
+type ListGroupsRespGroup struct {
+	ID           string
+	ProtocolType string
+}
+
+type ListGroupsResp struct {
+	CorrelationID int32
+	Err           error
+	Groups        []ListGroupsRespGroup
+}
+
+func ReadListGroupsResp(r io.Reader) (*ListGroupsResp, error) {
+	var resp ListGroupsResp
+	dec := NewDecoder(r)
+
+	// total message size
+	_ = dec.DecodeInt32()
+	resp.CorrelationID = dec.DecodeInt32()
+	resp.Err = errFromNo(dec.DecodeInt16())
+	resp.Groups = make([]ListGroupsRespGroup, dec.DecodeArrayLen())
+	for gi := range resp.Groups {
+		var group = &resp.Groups[gi]
+		group.ID = dec.DecodeString()
+		group.ProtocolType = dec.DecodeString()
+	}
+
+	if err := dec.Err(); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (r *ListGroupsResp) Bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// message size - for now just placeholder
+	enc.Encode(int32(0))
+	enc.Encode(r.CorrelationID)
+	enc.EncodeError(r.Err)
+	enc.EncodeArrayLen(len(r.Groups))
+	for _, group := range r.Groups {
+		enc.Encode(group.ID)
+		enc.Encode(group.ProtocolType)
+	}
+
+	if enc.Err() != nil {
+		return nil, enc.Err()
+	}
+
+	// update the message size information
+	b := buf.Bytes()
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+
+	return b, nil
+}
+
 type OffsetCommitReq struct {
 	CorrelationID int32
 	ClientID      string
-	ConsumerGroup string
+	GroupID       string
 	Topics        []OffsetCommitReqTopic
 }
 
@@ -833,7 +1576,7 @@ func ReadOffsetCommitReq(r io.Reader) (*OffsetCommitReq, error) {
 	apiVersion := dec.DecodeInt16()
 	req.CorrelationID = dec.DecodeInt32()
 	req.ClientID = dec.DecodeString()
-	req.ConsumerGroup = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
 	if apiVersion == 1 {
 		_ = dec.DecodeInt32()
 		_ = dec.DecodeString()
@@ -869,9 +1612,9 @@ func (r *OffsetCommitReq) Bytes() ([]byte, error) {
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 
-	enc.Encode(r.ConsumerGroup)
-	enc.Encode(int32(-1)) // ConsumerGroupGenerationId
-	enc.Encode("")        // ConsumerId
+	enc.Encode(r.GroupID)
+	enc.Encode(int32(-1)) // GroupIDGenerationID
+	enc.Encode("")        // ConsumerID
 
 	enc.EncodeArrayLen(len(r.Topics))
 	for _, topic := range r.Topics {
@@ -977,7 +1720,7 @@ func (r *OffsetCommitResp) Bytes() ([]byte, error) {
 type OffsetFetchReq struct {
 	CorrelationID int32
 	ClientID      string
-	ConsumerGroup string
+	GroupID       string
 	Topics        []OffsetFetchReqTopic
 }
 
@@ -996,7 +1739,7 @@ func ReadOffsetFetchReq(r io.Reader) (*OffsetFetchReq, error) {
 	_ = dec.DecodeInt32()
 	req.CorrelationID = dec.DecodeInt32()
 	req.ClientID = dec.DecodeString()
-	req.ConsumerGroup = dec.DecodeString()
+	req.GroupID = dec.DecodeString()
 	req.Topics = make([]OffsetFetchReqTopic, dec.DecodeArrayLen())
 	for ti := range req.Topics {
 		var topic = &req.Topics[ti]
@@ -1024,7 +1767,7 @@ func (r *OffsetFetchReq) Bytes() ([]byte, error) {
 	enc.Encode(r.CorrelationID)
 	enc.Encode(r.ClientID)
 
-	enc.Encode(r.ConsumerGroup)
+	enc.Encode(r.GroupID)
 	enc.EncodeArrayLen(len(r.Topics))
 	for _, t := range r.Topics {
 		enc.Encode(t.Name)

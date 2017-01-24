@@ -589,39 +589,20 @@ func (b *Broker) Producer(conf ProducerConf) Producer {
 func (p *producer) Produce(
 	topic string, partition int32, messages ...*proto.Message) (offset int64, err error) {
 
-	retry := &backoff.Backoff{Min: p.conf.RetryWait, Jitter: true}
-retryLoop:
-	for try := 0; try < p.conf.RetryLimit; try++ {
-		if try != 0 {
-			time.Sleep(retry.Duration())
-		}
-
-		offset, err = p.produce(topic, partition, messages...)
-
-		switch err {
-		case nil:
-			break retryLoop
-		case io.EOF, syscall.EPIPE:
-			// p.produce call is closing connection when this error shows up,
-			// but it's also returning it so that retry loop can count this
-			// case
-			// we cannot handle this error here, because there is no direct
-			// access to connection
-		default:
-			if err := p.broker.metadata.Refresh(); err != nil {
-				log.Debugf("cannot refresh metadata: %s", err)
-			}
-		}
-		log.Debugf("cannot produce messages (try %d): %s", retry, err)
-	}
-
-	if err == nil {
+	offset, err = p.produce(topic, partition, messages...)
+	switch err {
+	case nil:
 		// offset is the offset value of first published messages
 		for i, msg := range messages {
 			msg.Offset = int64(i) + offset
 		}
+	case io.EOF, syscall.EPIPE:
+		// Connection dying / network issues won't be fixed by a metadata refresh.
+	default:
+		// Try to refresh metadata in the background, in case the produce failed due to stale
+		// leadership information.
+		go p.broker.metadata.Refresh()
 	}
-
 	return offset, err
 }
 

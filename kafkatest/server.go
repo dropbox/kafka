@@ -591,8 +591,8 @@ func (s *Server) handleOffsetCommitRequest(
 func (s *Server) handleMetadataRequest(
 	nodeID int32, conn net.Conn, req *proto.MetadataReq) response {
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	log.Infof("requested metadata")
 

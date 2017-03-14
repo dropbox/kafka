@@ -28,8 +28,6 @@ func (s *BrokerSuite) SetUpTest(c *C) {
 func (s *BrokerSuite) newTestBrokerConf(clientID string) BrokerConf {
 	conf := NewBrokerConf(clientID)
 	conf.DialTimeout = 400 * time.Millisecond
-	conf.LeaderRetryLimit = 10
-	conf.LeaderRetryWait = 2 * time.Millisecond
 	return conf
 }
 
@@ -348,15 +346,17 @@ func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
 		{NodeID: 2, Host: host2, Port: int32(port2)},
 	}
 
+	// send invalid information to producer several times to make sure
+	// it's producing to the wrong node and retrying several times
+	numTriesRequired := 4
+
 	var metaCalls int
 	metadataHandler := func(srvName string) func(Serializable) Serializable {
 		return func(request Serializable) Serializable {
 			metaCalls++
 
 			var leader int32 = 1
-			// send invalid information to producer several times to make sure
-			// it's producing to the wrong node and retrying several times
-			if metaCalls > 4 {
+			if metaCalls > numTriesRequired {
 				leader = 2
 			}
 			req := request.(*proto.MetadataReq)
@@ -435,6 +435,12 @@ func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
 	defer broker.Close()
 
 	prod := broker.Producer(NewProducerConf())
+	for try := 0; try < numTriesRequired; try++ {
+		_, err := prod.Produce(
+			"test", 1, &proto.Message{Value: []byte("foo")})
+		c.Assert(err, Not(IsNil))
+	}
+	time.Sleep(1)
 	off, err := prod.Produce(
 		"test", 1, &proto.Message{Value: []byte("foo")})
 	c.Assert(err, IsNil)
@@ -813,11 +819,18 @@ func (s *BrokerSuite) TestPartitionOffset(c *C) {
 	c.Assert(err, IsNil)
 
 	c.Assert(md.NumGeneralFetches(), Equals, 1)
+	for try := 0; try < 2; try++ {
+		_, err := broker.offset("test", 1, -2)
+		c.Assert(handlerErr, IsNil)
+		c.Assert(err, Not(IsNil))
+		time.Sleep(1)
+	}
 	offset, err := broker.offset("test", 1, -2)
 	c.Assert(handlerErr, IsNil)
 	c.Assert(err, IsNil)
 	c.Assert(offset, Equals, int64(123))
-	c.Assert(md.NumGeneralFetches(), Equals, 3)
+	time.Sleep(1)
+	c.Assert(md.NumGeneralFetches(), Equals, 2)
 }
 
 func (s *BrokerSuite) TestPartitionCount(c *C) {
@@ -1107,8 +1120,6 @@ func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
 
 	conf := s.newTestBrokerConf("tester")
 	conf.DialTimeout = time.Millisecond * 50
-	conf.LeaderRetryWait = time.Millisecond
-	conf.LeaderRetryLimit = 3
 
 	// Force connection to first broker to start with
 	broker, err := Dial([]string{srv1.Address()}, conf)
@@ -1719,6 +1730,11 @@ To get the error EPIPE, you need to send large amount of data after closing the 
 
 	_, err = producer.Produce(
 		"test", 0, &proto.Message{Value: data})
+	// Produce fails due to broken pipe.
+	c.Assert(err, Not(IsNil))
+	_, err = producer.Produce(
+		"test", 0, &proto.Message{Value: data})
+	// Retry succeeds.
 	c.Assert(err, IsNil)
 }
 

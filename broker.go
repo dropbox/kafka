@@ -94,22 +94,6 @@ type BrokerConf struct {
 	// Kafka client ID.
 	ClientID string
 
-	// LeaderRetryLimit limits the number of connection attempts to a single
-	// node before failing. Use LeaderRetryWait to control the wait time
-	// between retries.
-	//
-	// Defaults to 10.
-	LeaderRetryLimit int
-
-	// LeaderRetryWait sets a limit to the waiting time when trying to connect
-	// to a single node after failure. This is the initial time, we will do an
-	// exponential backoff with increasingly long durations.
-	//
-	// Defaults to 500ms.
-	//
-	// Timeout on a connection is controlled by the DialTimeout setting.
-	LeaderRetryWait time.Duration
-
 	// AllowTopicCreation enables a last-ditch "send produce request" which
 	// happens if we do not know about a topic. This enables topic creation
 	// if your Kafka cluster is configured to allow it.
@@ -177,8 +161,6 @@ func NewBrokerConf(clientID string) BrokerConf {
 		DialRetryLimit:           10,
 		DialRetryWait:            500 * time.Millisecond,
 		AllowTopicCreation:       false,
-		LeaderRetryLimit:         10,
-		LeaderRetryWait:          500 * time.Millisecond,
 		MetadataRefreshTimeout:   30 * time.Second,
 		MetadataRefreshFrequency: 0,
 		ConnectionLimit:          10,
@@ -320,50 +302,36 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 // up producing to it incorrectly (i.e., our metadata happened to be out of
 // date).
 func (b *Broker) leaderConnection(topic string, partition int32) (*connection, error) {
-	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
-	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
-		if try != 0 {
-			sleepFor := retry.Duration()
-			log.Debugf("cannot get leader connection for %s:%d: retry=%d, sleep=%s",
-				topic, partition, try, sleepFor)
-			time.Sleep(sleepFor)
-		}
-
-		if b.IsClosed() {
-			return nil, errors.New("Broker was closed, giving up on leaderConnection.")
-		}
-
-		// Figure out which broker (node/endpoint) is presently leader for this t/p
-		nodeID, err := b.getLeaderEndpoint(topic, partition)
-		if err != nil {
-			continue
-		}
-
-		// Now attempt to get a connection to this node
-		if addr := b.metadata.GetNodeAddress(nodeID); addr == "" {
-			// Forget the endpoint so we'll refresh metadata next try
-			log.Warningf("[leaderConnection %s:%d] unknown broker ID: %d",
-				topic, partition, nodeID)
-			b.metadata.ForgetEndpoint(topic, partition)
-		} else {
-			// TODO: Can this return a non-nil error if the connection pool is full?
-			if conn, err := b.conns.GetConnectionByAddr(addr); err != nil {
-				// Forget the endpoint. It's possible this broker has failed and we want to wait
-				// for Kafka to elect a new leader. To trick our algorithm into working we have to
-				// forget this endpoint so it will refresh metadata.
-				log.Warningf("[leaderConnection %s:%d] failed to connect to %s: %s",
-					topic, partition, addr, err)
-				b.metadata.ForgetEndpoint(topic, partition)
-			} else {
-				// Successful (supposedly) connection
-				return conn, nil
-			}
-		}
+	if b.IsClosed() {
+		return nil, errors.New("Broker was closed, giving up on leaderConnection.")
 	}
 
-	// All paths lead to the topic/partition being unknown, a more specific error would have
-	// been returned earlier
-	return nil, proto.ErrUnknownTopicOrPartition
+	// Figure out which broker (node/endpoint) is presently leader for this t/p
+	nodeID, err := b.getLeaderEndpoint(topic, partition)
+	if err != nil {
+		return nil, err
+	}
+
+	// Now attempt to get a connection to this node
+	if addr := b.metadata.GetNodeAddress(nodeID); addr == "" {
+		// Forget the endpoint so we'll refresh metadata next try
+		log.Warningf("[leaderConnection %s:%d] unknown broker ID: %d",
+			topic, partition, nodeID)
+		b.metadata.ForgetEndpoint(topic, partition)
+		return nil, errors.New("Unknown broker ID in leaderConnection")
+	} else if conn, err := b.conns.GetConnectionByAddr(addr); err != nil {
+		// TODO: Can this return a non-nil error if the connection pool is full?
+		// Forget the endpoint. It's possible this broker has failed and we want to wait
+		// for Kafka to elect a new leader. To trick our algorithm into working we have to
+		// forget this endpoint so it will refresh metadata.
+		log.Warningf("[leaderConnection %s:%d] failed to connect to %s: %s",
+			topic, partition, addr, err)
+		b.metadata.ForgetEndpoint(topic, partition)
+		return nil, err
+	} else {
+		// Successful (supposedly) connection
+		return conn, nil
+	}
 }
 
 // coordinatorConnection returns connection to offset coordinator for given group. May
@@ -455,67 +423,47 @@ func (b *Broker) offset(topic string, partition int32, timems int64) (int64, err
 		},
 	}
 
-	var resErr error
-	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
-offsetRetryLoop:
-	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
-		if try != 0 {
-			time.Sleep(retry.Duration())
-		}
+	conn, err := b.leaderConnection(topic, partition)
+	if err != nil {
+		return 0, err
+	}
+	defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
 
-		conn, err := b.leaderConnection(topic, partition)
-		if err != nil {
-			return 0, err
+	resp, err := conn.Offset(req)
+	if err != nil {
+		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
+			log.Debugf("connection died while sending message to %s:%d: %s",
+				topic, partition, err)
+			conn.Close()
 		}
-		defer func(lconn *connection) { go b.conns.Idle(lconn) }(conn)
+		return 0, err
+	}
 
-		resp, err := conn.Offset(req)
-		if err != nil {
-			if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
-				log.Debugf("connection died while sending message to %s:%d: %s",
-					topic, partition, err)
-				conn.Close()
-				resErr = err
+	for _, t := range resp.Topics {
+		for _, p := range t.Partitions {
+			if t.Name != topic || p.ID != partition {
+				log.Warningf("offset response with unexpected data for %s:%d",
+					t.Name, p.ID)
 				continue
 			}
-			return 0, err
-		}
+			switch p.Err {
+			case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition,
+				proto.ErrBrokerNotAvailable:
+				// Failover happened, so we probably need to talk to a different broker. Let's
+				// kick off a metadata refresh.
+				log.Debugf("cannot fetch offset: %s", p.Err)
+				go b.metadata.Refresh()
+			}
 
-		for _, t := range resp.Topics {
-			for _, p := range t.Partitions {
-				if t.Name != topic || p.ID != partition {
-					log.Warningf("offset response with unexpected data for %s:%d",
-						t.Name, p.ID)
-					continue
-				}
-				resErr = p.Err
-
-				switch p.Err {
-				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition,
-					proto.ErrBrokerNotAvailable:
-					// Failover happened, so we probably need to talk to a different broker. Let's
-					// kick off a metadata refresh.
-					log.Debugf("cannot fetch offset: %s", p.Err)
-					if err := b.metadata.Refresh(); err != nil {
-						log.Debugf("cannot refresh metadata: %s", err)
-					}
-					continue offsetRetryLoop
-				}
-
-				// Happens when there are no messages in the partition
-				if len(p.Offsets) == 0 {
-					return 0, p.Err
-				} else {
-					return p.Offsets[0], p.Err
-				}
+			// Happens when there are no messages in the partition
+			if len(p.Offsets) == 0 {
+				return 0, p.Err
+			} else {
+				return p.Offsets[0], p.Err
 			}
 		}
 	}
-
-	if resErr == nil {
-		return 0, errors.New("incomplete fetch response")
-	}
-	return 0, resErr
+	return 0, errors.New("incomplete fetch response")
 }
 
 // OffsetEarliest returns the oldest offset available on the given partition.
@@ -1000,58 +948,49 @@ func (c *offsetCoordinator) CommitFull(topic string, partition int32, offset int
 // commit is saving offset and metadata information. Provides limited error
 // handling configurable through OffsetCoordinatorConf.
 func (c *offsetCoordinator) commit(
-	topic string, partition int32, offset int64, metadata string) (resErr error) {
+	topic string, partition int32, offset int64, metadata string) error {
 
-	retry := &backoff.Backoff{Min: c.conf.RetryErrWait, Jitter: true}
-	for try := 0; try < c.conf.RetryErrLimit; try++ {
-		if try != 0 {
-			time.Sleep(retry.Duration())
-		}
+	// get a copy of our connection with the lock, this might establish a new
+	// connection so can take a bit
+	conn, err := c.broker.coordinatorConnection(c.conf.ConsumerGroup)
+	if err != nil {
+		return err
+	}
+	defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
 
-		// get a copy of our connection with the lock, this might establish a new
-		// connection so can take a bit
-		conn, err := c.broker.coordinatorConnection(c.conf.ConsumerGroup)
-		if conn == nil {
-			resErr = err
-			continue
-		}
-		defer func(lconn *connection) { go c.broker.conns.Idle(lconn) }(conn)
-
-		resp, err := conn.OffsetCommit(&proto.OffsetCommitReq{
-			ClientID:      c.broker.conf.ClientID,
-			ConsumerGroup: c.conf.ConsumerGroup,
-			Topics: []proto.OffsetCommitReqTopic{
-				{
-					Name: topic,
-					Partitions: []proto.OffsetCommitReqPartition{
-						{ID: partition, Offset: offset, TimeStamp: time.Now(), Metadata: metadata},
-					},
+	resp, err := conn.OffsetCommit(&proto.OffsetCommitReq{
+		ClientID:      c.broker.conf.ClientID,
+		ConsumerGroup: c.conf.ConsumerGroup,
+		Topics: []proto.OffsetCommitReqTopic{
+			{
+				Name: topic,
+				Partitions: []proto.OffsetCommitReqPartition{
+					{ID: partition, Offset: offset, TimeStamp: time.Now(), Metadata: metadata},
 				},
 			},
-		})
-		resErr = err
-
+		},
+	})
+	if err != nil {
 		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
 			log.Debugf("connection died while committing on %s:%d for %s: %s",
 				topic, partition, c.conf.ConsumerGroup, err)
 			conn.Close()
+		}
+		return err
+	}
 
-		} else if err == nil {
-			// Should be a single response in the payload.
-			for _, t := range resp.Topics {
-				for _, p := range t.Partitions {
-					if t.Name != topic || p.ID != partition {
-						log.Warningf("commit response with unexpected data for %s:%d",
-							t.Name, p.ID)
-						continue
-					}
-					return p.Err
-				}
+	// Should be a single response in the payload.
+	for _, t := range resp.Topics {
+		for _, p := range t.Partitions {
+			if t.Name != topic || p.ID != partition {
+				log.Warningf("commit response with unexpected data for %s:%d",
+					t.Name, p.ID)
+				continue
 			}
-			return errors.New("response does not contain commit information")
+			return p.Err
 		}
 	}
-	return resErr
+	return errors.New("response does not contain commit information")
 }
 
 // Offset is returning last offset and metadata information committed for given

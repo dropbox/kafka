@@ -82,10 +82,12 @@ func (cm *clusterMetadata) cache(resp *proto.MetadataResp) {
 		for _, part := range topic.Partitions {
 			dest := topicPartition{topic.Name, part.ID}
 			cm.endpoints[dest] = part.Leader
+			log.Debugf("O HAI: %s[%d] -> %d", topic.Name, part.ID, part.Leader)
 		}
 		cm.partitions[topic.Name] = int32(len(topic.Partitions))
 	}
 	cm.conns.InitializeAddrs(addrs)
+	log.Debug("finished caching new metadata")
 }
 
 // Refresh is requesting metadata information from any node and refresh

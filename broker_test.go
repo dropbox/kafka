@@ -1512,6 +1512,251 @@ func (s *BrokerSuite) TestConsumeWhileLeaderChange(c *C) {
 	c.Assert(fetch2Calls, Equals, 1)
 }
 
+func (s *BrokerSuite) TestConsumeWhilePartitionMoves(c *C) {
+	srv1 := NewServer()
+	srv1.Start()
+	defer srv1.Close()
+
+	srv2 := NewServer()
+	srv2.Start()
+	defer srv2.Close()
+
+	srv3 := NewServer()
+	srv3.Start()
+	defer srv3.Close()
+
+	host1, port1 := srv1.HostPort()
+	host2, port2 := srv2.HostPort()
+	host3, port3 := srv3.HostPort()
+	brokers := []proto.MetadataRespBroker{
+		{NodeID: 1, Host: host1, Port: int32(port1)},
+		{NodeID: 2, Host: host2, Port: int32(port2)},
+		{NodeID: 3, Host: host3, Port: int32(port3)},
+	}
+
+	var metaCalls int
+	metadataHandler := func(srvName string) func(Serializable) Serializable {
+		return func(request Serializable) Serializable {
+			metaCalls++
+
+			var leader int32
+			// send invalid information to producer several times to make sure
+			// client is consuming wrong node and retrying several times before
+			// succeeding
+			var state []proto.MetadataRespPartition
+			if metaCalls < 3 {
+				state = []proto.MetadataRespPartition{
+					{
+						ID:       0,
+						Leader:   1,
+						Replicas: []int32{1, 2},
+						Isrs:     []int32{1, 2},
+					},
+					{
+						ID:       1,
+						Leader:   1,
+						Replicas: []int32{1, 2},
+						Isrs:     []int32{1, 2},
+					},
+				}
+			} else if metaCalls < 6 {
+				state = []proto.MetadataRespPartition{
+					{
+						ID:       0,
+						Leader:   1,
+						Replicas: []int32{1, 2},
+						Isrs:     []int32{1, 2},
+					},
+					{
+						ID:       1,
+						Leader:   0,
+						Replicas: []int32{1, 2},
+						Isrs:     []int32{1, 2},
+					},
+				}
+			} else {
+				state = []proto.MetadataRespPartition{
+					{
+						ID:       0,
+						Leader:   1,
+						Replicas: []int32{1, 2},
+						Isrs:     []int32{1, 2},
+					},
+					{
+						ID:       1,
+						Leader:   3,
+						Replicas: []int32{3, 2},
+						Isrs:     []int32{3, 2},
+					},
+				}
+			}
+			req := request.(*proto.MetadataReq)
+			resp := &proto.MetadataResp{
+				CorrelationID: req.CorrelationID,
+				Brokers:       brokers,
+				Topics: []proto.MetadataRespTopic{
+					{
+						Name:       "test",
+						Partitions: state,
+					},
+				},
+			}
+			return resp
+		}
+	}
+
+	srv1.Handle(MetadataRequest, metadataHandler("srv1"))
+	srv2.Handle(MetadataRequest, metadataHandler("srv2"))
+	srv3.Handle(MetadataRequest, metadataHandler("srv3"))
+
+	var fetch1Calls int
+	srv1.Handle(FetchRequest, func(request Serializable) Serializable {
+		fetch1Calls++
+		req := request.(*proto.FetchReq)
+
+		if fetch1Calls == 1 {
+			return &proto.FetchResp{
+				CorrelationID: req.CorrelationID,
+				Topics: []proto.FetchRespTopic{
+					{
+						Name: "test",
+						Partitions: []proto.FetchRespPartition{
+							{
+								ID:        1,
+								TipOffset: 4,
+								Messages: []*proto.Message{
+									{Offset: 1, Value: []byte("first")},
+								},
+							},
+						},
+					},
+				},
+			}
+		}
+		if metaCalls < 6 {
+			return &proto.FetchResp{
+				CorrelationID: req.CorrelationID,
+				Topics: []proto.FetchRespTopic{
+					{
+						Name: "test",
+						Partitions: []proto.FetchRespPartition{
+							{
+								ID:  1,
+								Err: proto.ErrNotLeaderForPartition,
+							},
+						},
+					},
+				},
+			}
+		}
+		// This partition is now unknown
+		return &proto.FetchResp{
+			CorrelationID: req.CorrelationID,
+			Topics: []proto.FetchRespTopic{
+				{
+					Name: "test",
+					Partitions: []proto.FetchRespPartition{
+						{
+							ID:  1,
+							Err: proto.ErrUnknownTopicOrPartition,
+						},
+					},
+				},
+			},
+		}
+	})
+
+	var fetch2Calls int
+	srv2.Handle(FetchRequest, func(request Serializable) Serializable {
+		fetch2Calls++
+		req := request.(*proto.FetchReq)
+		return &proto.FetchResp{
+			CorrelationID: req.CorrelationID,
+			Topics: []proto.FetchRespTopic{
+				{
+					Name: "test",
+					Partitions: []proto.FetchRespPartition{
+						{
+							ID:        1,
+							TipOffset: 8,
+							Messages: []*proto.Message{
+								{Offset: 2, Value: []byte("second")},
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	var fetch3Calls int
+	srv3.Handle(FetchRequest, func(request Serializable) Serializable {
+		fetch3Calls++
+		req := request.(*proto.FetchReq)
+
+		if metaCalls < 6 {
+			return &proto.FetchResp{
+				CorrelationID: req.CorrelationID,
+				Topics: []proto.FetchRespTopic{
+					{
+						Name: "test",
+						Partitions: []proto.FetchRespPartition{
+							{
+								ID:  1,
+								Err: proto.ErrUnknownTopicOrPartition,
+							},
+						},
+					},
+				},
+			}
+		}
+
+		// Enough meta calls, we're now known
+		return &proto.FetchResp{
+			CorrelationID: req.CorrelationID,
+			Topics: []proto.FetchRespTopic{
+				{
+					Name: "test",
+					Partitions: []proto.FetchRespPartition{
+						{
+							ID:        1,
+							TipOffset: 8,
+							Messages: []*proto.Message{
+								{Offset: 2, Value: []byte("second")},
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	broker, err := Dial([]string{srv1.Address()}, s.newTestBrokerConf("tester"))
+	c.Assert(err, IsNil)
+	defer broker.Close()
+
+	conf := NewConsumerConf("test", 1)
+	conf.StartOffset = 0
+	cons, err := broker.Consumer(conf)
+	c.Assert(err, IsNil)
+
+	// consume twice - once from srv1 and once from srv2
+	m, err := cons.Consume()
+	c.Assert(err, IsNil)
+	c.Assert(m.Offset, Equals, int64(1))
+
+	m, err = cons.Consume()
+	c.Assert(err, IsNil)
+	c.Assert(m.Offset, Equals, int64(2))
+
+	// 1,2,3   -> srv1
+	// 4, 5    -> no leader
+	// 6, 7... -> srv2
+	c.Assert(metaCalls, Equals, 6)
+	c.Assert(fetch1Calls, Equals, 3)
+	c.Assert(fetch2Calls, Equals, 1)
+}
+
 func (s *BrokerSuite) TestConsumerFailover(c *C) {
 	srv := NewServer()
 	srv.Start()

@@ -492,12 +492,12 @@ offsetRetryLoop:
 
 				switch p.Err {
 				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition,
-					proto.ErrBrokerNotAvailable:
+					proto.ErrBrokerNotAvailable, proto.ErrUnknownTopicOrPartition:
 					// Failover happened, so we probably need to talk to a different broker. Let's
 					// kick off a metadata refresh.
-					log.Debugf("cannot fetch offset: %s", p.Err)
+					log.Warningf("cannot fetch offset: %s", p.Err)
 					if err := b.metadata.Refresh(); err != nil {
-						log.Debugf("cannot refresh metadata: %s", err)
+						log.Warningf("cannot refresh metadata: %s", err)
 					}
 					continue offsetRetryLoop
 				}
@@ -926,12 +926,12 @@ consumeRetryLoop:
 
 				switch p.Err {
 				case proto.ErrLeaderNotAvailable, proto.ErrNotLeaderForPartition,
-					proto.ErrBrokerNotAvailable:
+					proto.ErrBrokerNotAvailable, proto.ErrUnknownTopicOrPartition:
 					// Failover happened, so we probably need to talk to a different broker. Let's
 					// kick off a metadata refresh.
-					log.Debugf("cannot fetch messages (try %d): %s", retry, p.Err)
+					log.Warningf("cannot fetch messages (try %d): %s", retry, p.Err)
 					if err := c.broker.metadata.Refresh(); err != nil {
-						log.Debugf("cannot refresh metadata: %s", err)
+						log.Warningf("cannot refresh metadata: %s", err)
 					}
 					continue consumeRetryLoop
 				}

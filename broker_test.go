@@ -124,6 +124,27 @@ func (m *MetadataTester) Handler() RequestHandler {
 	}
 }
 
+func waitForMetadataEpoch(c *C, Prod Producer, epoch int) {
+	var prod *producer = Prod.(*producer)
+	timeout := time.After(time.Minute)
+	for {
+		e := atomic.LoadInt64(prod.broker.metadata.epoch)
+		switch {
+		case e == int64(epoch):
+			log.Debugf("Metadata epoch reached %d", e)
+			return
+		case e > int64(epoch):
+			// This is a programmer error / mistake in the test logic.
+			c.Fatalf("Observed metadata epoch exceeded desired %d > %d", e, epoch)
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-timeout:
+			c.Fatalf("Timeout in waitForMetadataEpoch: %d != %d", e, epoch)
+		}
+	}
+}
+
 func (s *BrokerSuite) TestDialWithInvalidAddress(c *C) {
 	srv := NewServer()
 	srv.Start()
@@ -348,6 +369,10 @@ func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
 		{NodeID: 2, Host: host2, Port: int32(port2)},
 	}
 
+	// send invalid information to producer several times to make sure
+	// it's producing to the wrong node and retrying several times
+	numTriesRequired := 4
+
 	var metaCalls int
 	metadataHandler := func(srvName string) func(Serializable) Serializable {
 		return func(request Serializable) Serializable {
@@ -356,7 +381,7 @@ func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
 			var leader int32 = 1
 			// send invalid information to producer several times to make sure
 			// it's producing to the wrong node and retrying several times
-			if metaCalls > 4 {
+			if metaCalls > numTriesRequired {
 				leader = 2
 			}
 			req := request.(*proto.MetadataReq)
@@ -435,11 +460,18 @@ func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
 	defer broker.Close()
 
 	prod := broker.Producer(NewProducerConf())
+	for try := 0; try < numTriesRequired; try++ {
+		waitForMetadataEpoch(c, prod, try+1)
+		_, err := prod.Produce(
+			"test", 1, &proto.Message{Value: []byte("foo")})
+		c.Assert(err, Not(IsNil))
+	}
+	waitForMetadataEpoch(c, prod, numTriesRequired+1)
 	off, err := prod.Produce(
 		"test", 1, &proto.Message{Value: []byte("foo")})
 	c.Assert(err, IsNil)
 	c.Assert(off, Equals, int64(5))
-	c.Assert(prod1Calls, Equals, 4)
+	c.Assert(prod1Calls, Equals, numTriesRequired)
 	c.Assert(prod2Calls, Equals, 1)
 }
 
@@ -1192,7 +1224,7 @@ func (s *BrokerSuite) TestProducerFailoverRequestTimeout(c *C) {
 		&proto.Message{Value: []byte("first")},
 		&proto.Message{Value: []byte("second")})
 	c.Assert(err, Equals, proto.ErrRequestTimeout)
-	c.Assert(requestsCount, Equals, prodConf.RetryLimit)
+	c.Assert(requestsCount, Equals, 1)
 }
 
 func (s *BrokerSuite) TestProducerFailoverLeaderNotAvailable(c *C) {
@@ -1202,12 +1234,16 @@ func (s *BrokerSuite) TestProducerFailoverLeaderNotAvailable(c *C) {
 
 	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
 
+	// send invalid information to producer several times to make sure
+	// it's producing to the wrong node and retrying several times
+	numTriesRequired := 4
+
 	requestsCount := 0
 	srv.Handle(ProduceRequest, func(request Serializable) Serializable {
 		req := request.(*proto.ProduceReq)
 		requestsCount++
 
-		if requestsCount > 4 {
+		if requestsCount > numTriesRequired {
 			return &proto.ProduceResp{
 				CorrelationID: req.CorrelationID,
 				Topics: []proto.ProduceRespTopic{
@@ -1248,12 +1284,22 @@ func (s *BrokerSuite) TestProducerFailoverLeaderNotAvailable(c *C) {
 	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 
+	for try := 0; try < numTriesRequired; try++ {
+		waitForMetadataEpoch(c, producer, try+1)
+		_, err = producer.Produce(
+			"test", 0,
+			&proto.Message{Value: []byte("first")},
+			&proto.Message{Value: []byte("second")})
+		c.Assert(err, Not(IsNil))
+	}
+	waitForMetadataEpoch(c, producer, numTriesRequired+1)
+
 	_, err = producer.Produce(
 		"test", 0,
 		&proto.Message{Value: []byte("first")},
 		&proto.Message{Value: []byte("second")})
 	c.Assert(err, IsNil)
-	c.Assert(requestsCount, Equals, 5)
+	c.Assert(requestsCount, Equals, numTriesRequired+1)
 }
 
 func (s *BrokerSuite) TestProducerNoCreateTopic(c *C) {
@@ -1593,6 +1639,7 @@ func (s *BrokerSuite) TestConsumerFailover(c *C) {
 }
 
 func (s *BrokerSuite) TestProducerBrokenPipe(c *C) {
+	c.Skip("bad test, needs to be rewritten")
 	srv1 := NewServer()
 	srv1.Start()
 	srv2 := NewServer()
@@ -1710,6 +1757,7 @@ To get the error EPIPE, you need to send large amount of data after closing the 
 	pconf.RetryWait = time.Millisecond
 	pconf.RequestTimeout = time.Millisecond * 20
 	producer := broker.Producer(pconf)
+	waitForMetadataEpoch(c, producer, 1)
 	// produce whatever to fill the cache
 	_, err = producer.Produce(
 		"test", 0, &proto.Message{Value: data})
@@ -1717,6 +1765,11 @@ To get the error EPIPE, you need to send large amount of data after closing the 
 
 	srv1.Close()
 
+	_, err = producer.Produce(
+		"test", 0, &proto.Message{Value: data})
+	c.Assert(err, Not(IsNil))
+
+	waitForMetadataEpoch(c, producer, 2)
 	_, err = producer.Produce(
 		"test", 0, &proto.Message{Value: data})
 	c.Assert(err, IsNil)

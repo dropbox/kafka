@@ -63,9 +63,7 @@ func (cm *clusterMetadata) cache(resp *proto.MetadataResp) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if !cm.created.IsZero() {
-		log.Debugf("rewriting old metadata: %s", time.Now().Sub(cm.created))
-	}
+	log.Debugf("Caching new metadata: %#v", resp)
 
 	cm.created = time.Now()
 	cm.nodes = make(nodeMap)

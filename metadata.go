@@ -60,10 +60,15 @@ func newClusterMetadata(conf BrokerConf, pool *connectionPool) clusterMetadata {
 // Do not call with partial metadata response, this assumes we have the full
 // set of metadata in the response!
 func (cm *clusterMetadata) cache(resp *proto.MetadataResp) {
+	if len(resp.Brokers) <= 0 {
+		log.Errorf("Refusing to cache new metadata: %+v", resp)
+		return
+	}
+
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	log.Debugf("Caching new metadata: %#v", resp)
+	log.Debugf("Caching new metadata: %+v", resp)
 
 	cm.created = time.Now()
 	cm.nodes = make(nodeMap)

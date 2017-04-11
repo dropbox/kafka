@@ -126,6 +126,7 @@ func (d *errorAverseRRProducer) Distribute(topic string, messages ...*proto.Mess
 // or fully down, this implementation is more performant.
 type partitionData struct {
 	Partition           int32
+	reset               chan struct{}
 	sharedRetry         *backoff.Backoff
 	successiveFailures  uint64
 	availablePartitions chan *partitionData
@@ -141,6 +142,10 @@ func (d *partitionData) Success() {
 			d.Partition, d.topic, successiveFailures)
 	}
 	atomic.StoreUint64(&d.successiveFailures, 0)
+	select {
+	case d.reset <- struct{}{}:
+	default:
+	}
 }
 
 func (d *partitionData) Failure() {
@@ -161,7 +166,12 @@ func (d *partitionData) reEnqueue() {
 			t := d.sharedRetry.ForAttempt(float64(successiveFailures - 1))
 			log.Warningf("Suspending partition %d of %s for %s (%d)",
 				d.Partition, d.topic, t, successiveFailures)
-			time.Sleep(t)
+			select {
+			case <-time.After(t):
+				// This is a race and might see a reset from a call to Success a long time ago, but
+				// the successiveFailures count will keep counting upwards so the impact is minimal.
+			case <-d.reset:
+			}
 			log.Warningf("Re-enqueueing partition %d of %s after %s",
 				d.Partition, d.topic, t)
 		}
@@ -220,6 +230,7 @@ func (p *partitionManager) SetPartitionCount(topic string, partitionCount int32)
 		for i := int32(0); i < partitionCount; i++ {
 			availablePartitions <- &partitionData{
 				Partition:           i,
+				reset:               make(chan struct{}, 1),
 				sharedRetry:         p.sharedRetry,
 				availablePartitions: availablePartitions,
 				topic:               topic,

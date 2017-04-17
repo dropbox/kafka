@@ -288,7 +288,7 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 	if !b.conf.AllowTopicCreation {
 		log.Warningf("[getLeaderEndpoint %s:%d] unknown topic or partition (no create)",
 			topic, partition)
-		return 0, proto.ErrUnknownTopicOrPartition
+		return 0, proto.ErrUnknownTopicOrPartition.NewSynthetic("Refreshed metadata did not include leader.")
 	}
 
 	// Try to create the topic by requesting the metadata for that one specific topic
@@ -307,18 +307,9 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 	// This topic is dead to us, we failed to find it and failed to create it
 	log.Warningf("[getLeaderEndpoint %s:%d] unknown topic or partition (post-create)",
 		topic, partition)
-	return 0, proto.ErrUnknownTopicOrPartition
+	return 0, proto.ErrUnknownTopicOrPartition.NewSynthetic("Post-create metadata did not include leader.")
 }
 
-// leaderConnection returns connection to leader for given partition. If
-// connection does not exist, broker will try to connect.
-//
-// Failed connection retry is controlled by broker configuration.
-//
-// If broker is configured to allow topic creation, then if we don't find
-// the leader we will return a random broker. The broker will error if we end
-// up producing to it incorrectly (i.e., our metadata happened to be out of
-// date).
 func (b *Broker) leaderConnection(topic string, partition int32) (*connection, error) {
 	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
 	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
@@ -363,7 +354,7 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 
 	// All paths lead to the topic/partition being unknown, a more specific error would have
 	// been returned earlier
-	return nil, proto.ErrUnknownTopicOrPartition
+	return nil, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries")
 }
 
 // coordinatorConnection returns connection to offset coordinator for given group. May
@@ -377,7 +368,7 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (*connection, error
 	resp, err := b.getGroupCoordinator(consumerGroup)
 	if err != nil {
 		log.Warningf("coordinatorConnection: failed to discover coordinator: %s", err)
-		return nil, proto.ErrNoCoordinator
+		return nil, proto.ErrNoCoordinator.NewSynthetic(err.Error())
 	}
 
 	// Now get connection to actual coordinator
@@ -386,7 +377,7 @@ func (b *Broker) coordinatorConnection(consumerGroup string) (*connection, error
 	if err != nil {
 		log.Errorf("coordinatorConnection: failed to reach node %d at %s: %s",
 			resp.CoordinatorID, addr, err)
-		return nil, proto.ErrNoCoordinator
+		return nil, proto.ErrNoCoordinator.NewSynthetic(err.Error())
 	}
 
 	// Return to caller, they must ensure Idle is eventually called
@@ -411,7 +402,7 @@ func (b *Broker) getGroupCoordinator(consumerGroup string) (*proto.GroupCoordina
 	}
 	if conn == nil {
 		log.Warningf("coordinatorConnection: failed to connect to any broker")
-		return nil, errors.New("failed to connect to any broker")
+		return nil, errors.New("coordinatorConnection: failed to connect to any broker")
 	}
 
 	// Ensure we release this connection

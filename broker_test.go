@@ -212,7 +212,7 @@ func (s *BrokerSuite) TestProducer(c *C) {
 		{Value: []byte("second")},
 	}
 	_, err = producer.Produce("does-not-exist", 42142, messages...)
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 
 	var handleErr error
 	var createdMsgs int
@@ -280,7 +280,7 @@ func (s *BrokerSuite) TestProducerWithNoAck(c *C) {
 		{Value: []byte("second")},
 	}
 	_, err = producer.Produce("does-not-exist", 42142, messages...)
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 
 	errc := make(chan error)
 	var createdMsgs int
@@ -552,10 +552,10 @@ func (s *BrokerSuite) TestConsumer(c *C) {
 	c.Assert(err, IsNil)
 
 	_, err = broker.Consumer(NewConsumerConf("does-not-exists", 413))
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 
 	_, err = broker.Consumer(NewConsumerConf("test", 1))
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 
 	consConf := NewConsumerConf("test", 413)
 	consConf.RetryWait = time.Millisecond
@@ -655,10 +655,10 @@ func (s *BrokerSuite) TestBatchConsumer(c *C) {
 	c.Assert(err, IsNil)
 
 	_, err = broker.BatchConsumer(NewConsumerConf("does-not-exists", 413))
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 
 	_, err = broker.BatchConsumer(NewConsumerConf("test", 1))
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 
 	consConf := NewConsumerConf("test", 413)
 	consConf.RetryWait = time.Millisecond
@@ -1579,7 +1579,7 @@ func (s *BrokerSuite) TestProducerNoCreateTopic(c *C) {
 		"test2", 0,
 		&proto.Message{Value: []byte("first")},
 		&proto.Message{Value: []byte("second")})
-	c.Assert(err, Equals, proto.ErrUnknownTopicOrPartition)
+	c.Assert(err.Error(), Equals, proto.ErrUnknownTopicOrPartition.NewSynthetic("leaderConnection exhausted retries").Error())
 	c.Assert(md.NumSpecificFetches(), Equals, 0)
 	c.Assert(produces, Equals, 0)
 }
@@ -2291,7 +2291,7 @@ func (s *BrokerSuite) TestOffsetCoordinatorNoCoordinatorError(c *C) {
 	c.Assert(err, IsNil)
 
 	err = oc.Commit("foo", int32(0), 10)
-	c.Assert(err, Equals, proto.ErrNoCoordinator)
+	c.Assert(err.Error(), Equals, proto.ErrNoCoordinator.NewSynthetic("consumer coordinator not available (15)").Error())
 }
 
 func (s *BrokerSuite) BenchmarkConsumer_10Msgs(c *C)    { s.benchmarkConsumer(c, 10) }

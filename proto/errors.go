@@ -5,36 +5,36 @@ import (
 )
 
 var (
-	ErrUnknown                                 = &KafkaError{-1, "unknown error"}
-	ErrOffsetOutOfRange                        = &KafkaError{1, "offset out of range"}
-	ErrInvalidMessage                          = &KafkaError{2, "invalid message"}
-	ErrUnknownTopicOrPartition                 = &KafkaError{3, "unknown topic or partition"}
-	ErrInvalidMessageSize                      = &KafkaError{4, "invalid message size"}
-	ErrLeaderNotAvailable                      = &KafkaError{5, "leader not available"}
-	ErrNotLeaderForPartition                   = &KafkaError{6, "not leader for partition"}
-	ErrRequestTimeout                          = &KafkaError{7, "request timeed out"}
-	ErrBrokerNotAvailable                      = &KafkaError{8, "broker not available"}
-	ErrReplicaNotAvailable                     = &KafkaError{9, "replica not available"}
-	ErrMessageSizeTooLarge                     = &KafkaError{10, "message size too large"}
-	ErrScaleControllerEpoch                    = &KafkaError{11, "scale controller epoch"}
-	ErrOffsetMetadataTooLarge                  = &KafkaError{12, "offset metadata too large"}
-	ErrOffsetLoadInProgress                    = &KafkaError{14, "offsets load in progress"}
-	ErrNoCoordinator                           = &KafkaError{15, "consumer coordinator not available"}
-	ErrNotCoordinator                          = &KafkaError{16, "not coordinator for consumer"}
-	ErrInvalidTopic                            = &KafkaError{17, "operation on an invalid topic"}
-	ErrRecordListTooLarge                      = &KafkaError{18, "message batch larger than the configured segment size"}
-	ErrNotEnoughReplicas                       = &KafkaError{19, "not enough in-sync replicas"}
-	ErrNotEnoughReplicasAfterAppend            = &KafkaError{20, "messages are written to the log, but to fewer in-sync replicas than required"}
-	ErrInvalidRequiredAcks                     = &KafkaError{21, "invalid value for required acks"}
-	ErrIllegalGeneration                       = &KafkaError{22, "consumer generation id is not valid"}
-	ErrInconsistentPartitionAssignmentStrategy = &KafkaError{23, "partition assignment strategy does not match that of the group"}
-	ErrUnknownParititonAssignmentStrategy      = &KafkaError{24, "partition assignment strategy is unknown to the broker"}
-	ErrUnknownConsumerID                       = &KafkaError{25, "coordinator is not aware of this consumer"}
-	ErrInvalidSessionTimeout                   = &KafkaError{26, "invalid session timeout"}
-	ErrCommitingParitionsNotAssigned           = &KafkaError{27, "committing partitions are not assigned the committer"}
-	ErrInvalidCommitOffsetSize                 = &KafkaError{28, "offset data size is not valid"}
-	ErrAuthorizationFailed                     = &KafkaError{29, "not authorized"}
-	ErrRebalanceInProgress                     = &KafkaError{30, "group is rebalancing, rejoin is needed"}
+	ErrUnknown                                 = &KafkaError{-1, "unknown error", ""}
+	ErrOffsetOutOfRange                        = &KafkaError{1, "offset out of range", ""}
+	ErrInvalidMessage                          = &KafkaError{2, "invalid message", ""}
+	ErrUnknownTopicOrPartition                 = &KafkaError{3, "unknown topic or partition", ""}
+	ErrInvalidMessageSize                      = &KafkaError{4, "invalid message size", ""}
+	ErrLeaderNotAvailable                      = &KafkaError{5, "leader not available", ""}
+	ErrNotLeaderForPartition                   = &KafkaError{6, "not leader for partition", ""}
+	ErrRequestTimeout                          = &KafkaError{7, "request timeed out", ""}
+	ErrBrokerNotAvailable                      = &KafkaError{8, "broker not available", ""}
+	ErrReplicaNotAvailable                     = &KafkaError{9, "replica not available", ""}
+	ErrMessageSizeTooLarge                     = &KafkaError{10, "message size too large", ""}
+	ErrScaleControllerEpoch                    = &KafkaError{11, "scale controller epoch", ""}
+	ErrOffsetMetadataTooLarge                  = &KafkaError{12, "offset metadata too large", ""}
+	ErrOffsetLoadInProgress                    = &KafkaError{14, "offsets load in progress", ""}
+	ErrNoCoordinator                           = &KafkaError{15, "consumer coordinator not available", ""}
+	ErrNotCoordinator                          = &KafkaError{16, "not coordinator for consumer", ""}
+	ErrInvalidTopic                            = &KafkaError{17, "operation on an invalid topic", ""}
+	ErrRecordListTooLarge                      = &KafkaError{18, "message batch larger than the configured segment size", ""}
+	ErrNotEnoughReplicas                       = &KafkaError{19, "not enough in-sync replicas", ""}
+	ErrNotEnoughReplicasAfterAppend            = &KafkaError{20, "messages are written to the log, but to fewer in-sync replicas than required", ""}
+	ErrInvalidRequiredAcks                     = &KafkaError{21, "invalid value for required acks", ""}
+	ErrIllegalGeneration                       = &KafkaError{22, "consumer generation id is not valid", ""}
+	ErrInconsistentPartitionAssignmentStrategy = &KafkaError{23, "partition assignment strategy does not match that of the group", ""}
+	ErrUnknownParititonAssignmentStrategy      = &KafkaError{24, "partition assignment strategy is unknown to the broker", ""}
+	ErrUnknownConsumerID                       = &KafkaError{25, "coordinator is not aware of this consumer", ""}
+	ErrInvalidSessionTimeout                   = &KafkaError{26, "invalid session timeout", ""}
+	ErrCommitingParitionsNotAssigned           = &KafkaError{27, "committing partitions are not assigned the committer", ""}
+	ErrInvalidCommitOffsetSize                 = &KafkaError{28, "offset data size is not valid", ""}
+	ErrAuthorizationFailed                     = &KafkaError{29, "not authorized", ""}
+	ErrRebalanceInProgress                     = &KafkaError{30, "group is rebalancing, rejoin is needed", ""}
 
 	errnoToErr = map[int16]error{
 		-1: ErrUnknown,
@@ -73,14 +73,28 @@ var (
 type KafkaError struct {
 	errno   int16
 	message string
+	// An additional message explaining cases where the client returns this error internally
+	// instead of directly from a Kafka broker.
+	syntheticMessage string
 }
 
 func (err *KafkaError) Error() string {
+	if err.syntheticMessage != "" {
+		fmt.Sprintf("%s (%d %s)", err.message, err.errno, err.syntheticMessage)
+	}
 	return fmt.Sprintf("%s (%d)", err.message, err.errno)
 }
 
 func (err *KafkaError) Errno() int {
 	return int(err.errno)
+}
+
+func (err *KafkaError) SyntheticError() string {
+	return err.syntheticMessage
+}
+
+func (err *KafkaError) NewSynthetic(message string) *KafkaError {
+	return &KafkaError{err.errno, err.message, message}
 }
 
 func errFromNo(errno int16) error {

@@ -170,6 +170,10 @@ func (c *connection) Close() error {
 	if c.stopErr == nil {
 		c.stopErr = ErrClosed
 		close(c.stop)
+
+		for correlationID, _ := range c.respc {
+			go c.releaseWaiter(correlationID)
+		}
 	}
 	return c.rw.Close()
 }

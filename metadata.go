@@ -43,7 +43,7 @@ func newClusterMetadata(conf BrokerConf, pool *connectionPool) clusterMetadata {
 				select {
 				case <-time.After(conf.MetadataRefreshFrequency):
 					log.Info("Initiating periodic metadata refresh.")
-					result.Refresh()
+					go result.Fetch()
 				case <-pool.ClosedChan():
 					log.Info("Aborting periodic metadata refresh due to closed connection pool.")
 					return

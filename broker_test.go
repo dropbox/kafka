@@ -1875,7 +1875,9 @@ func (s *BrokerSuite) TestProducerBrokenPipe(c *C) {
 	srv2.Start()
 
 	host1, port1 := srv1.HostPort()
+	log.Infof("server1 %s:%d", host1, port1)
 	host2, port2 := srv2.HostPort()
+	log.Infof("server2 %s:%d", host2, port2)
 
 	srv1.Handle(MetadataRequest, func(request Serializable) Serializable {
 		req := request.(*proto.MetadataReq)

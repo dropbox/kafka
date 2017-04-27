@@ -15,6 +15,8 @@ var _ = Suite(&ConnectionSuite{})
 
 type ConnectionSuite struct{}
 
+func init() { logInit() }
+
 type serializableMessage interface {
 	Bytes() ([]byte, error)
 }
@@ -139,11 +141,12 @@ func (s *ConnectionSuite) TestConnectionMetadata(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 	resp, err := conn.Metadata(&proto.MetadataReq{
-		ClientID: "tester",
-		Topics:   []string{"first", "second"},
+		CorrelationID: 1,
+		ClientID:      "tester",
+		Topics:        []string{"first", "second"},
 	})
 	if err != nil {
 		c.Fatalf("could not fetch response: %s", err)
@@ -197,7 +200,7 @@ func (s *ConnectionSuite) TestConnectionProduce(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 
 	go func() {
@@ -313,7 +316,7 @@ func (s *ConnectionSuite) TestConnectionFetch(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 	resp, err := conn.Fetch(&proto.FetchReq{
 		CorrelationID: 1,
@@ -376,10 +379,11 @@ func (s *ConnectionSuite) TestConnectionOffset(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 	resp, err := conn.Offset(&proto.OffsetReq{
-		ClientID: "tester",
+		CorrelationID: 1,
+		ClientID:      "tester",
 		Topics: []proto.OffsetReqTopic{
 			{
 				Name: "test",
@@ -408,7 +412,7 @@ func (s *ConnectionSuite) TestConnectionProduceNoAck(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 	resp, err := conn.Produce(&proto.ProduceReq{
 		ClientID:     "tester",
@@ -453,7 +457,7 @@ func (s *ConnectionSuite) TestClosedConnectionWriter(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 
 	longBytes := []byte(strings.Repeat("xxxxxxxxxxxxxxxxxxxxxx", 1000))
@@ -481,14 +485,6 @@ func (s *ConnectionSuite) TestClosedConnectionWriter(c *C) {
 			c.Fatal("message publishing after closing connection should not be possible")
 		}
 	}
-
-	// although we produced ten requests, because connection is closed, no
-	// response channel should be registered
-	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	if len(conn.respc) != 0 {
-		c.Fatalf("expected 0 waiting responses, got %d", len(conn.respc))
-	}
 }
 
 func (s *ConnectionSuite) TestClosedConnectionReader(c *C) {
@@ -500,7 +496,7 @@ func (s *ConnectionSuite) TestClosedConnectionReader(c *C) {
 	}
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 
 	req := &proto.FetchReq{
@@ -526,14 +522,6 @@ func (s *ConnectionSuite) TestClosedConnectionReader(c *C) {
 			c.Fatal("fetching from closed connection succeeded")
 		}
 	}
-
-	// although we produced ten requests, because connection is closed, no
-	// response channel should be registered
-	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	if len(conn.respc) != 0 {
-		c.Fatalf("expected 0 waiting responses, got %d", len(conn.respc))
-	}
 }
 
 func (s *ConnectionSuite) TestConnectionReaderAfterEOF(c *C) {
@@ -547,7 +535,7 @@ func (s *ConnectionSuite) TestConnectionReaderAfterEOF(c *C) {
 
 	conn, err := newTCPConnection(ln.Addr().String(), time.Second)
 	if err != nil {
-		c.Fatalf("could not conect to test server: %s", err)
+		c.Fatalf("could not connect to test server: %s", err)
 	}
 
 	req := &proto.FetchReq{

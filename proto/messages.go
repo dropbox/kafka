@@ -58,6 +58,10 @@ const (
 	CompressionSnappy Compression = 2
 )
 
+type Request interface {
+	WriteTo(io.Writer) (int64, error)
+}
+
 // ReadReq returns request kind ID and byte representation of the whole message
 // in wire protocol format.
 func ReadReq(r io.Reader) (requestKind int16, b []byte, err error) {

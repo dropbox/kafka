@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"math/rand"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/dropbox/kafka/proto"
@@ -17,17 +16,14 @@ import (
 // ErrClosed is returned as result of any request made using closed connection.
 var ErrClosed = errors.New("closed")
 
-// Low level abstraction over connection to Kafka.
+// Low level abstraction over connection to Kafka. This structure is NOT THREAD
+// SAFE and must be only owned by one caller at a time.
 type connection struct {
 	addr      string
 	startTime time.Time
 	rw        io.ReadWriteCloser
-	stop      chan struct{}
-	nextID    chan int32
-
-	// mu protects the following members. It must only be accessed by connection methods.
-	mu    *sync.Mutex
-	respc map[int32]chan []byte
+	rd        *bufio.Reader
+	rnd       *rand.Rand
 
 	// stopErr is set if and only if this connection has been closed. If set, it indicates
 	// the error that closed the connection.
@@ -40,120 +36,17 @@ func newTCPConnection(address string, timeout time.Duration) (*connection, error
 	if err != nil {
 		return nil, err
 	}
+
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	c := &connection{
 		addr:      address,
-		mu:        &sync.Mutex{},
-		stop:      make(chan struct{}),
-		nextID:    make(chan int32),
 		rw:        conn,
-		respc:     make(map[int32]chan []byte),
+		rd:        bufio.NewReader(conn),
+		rnd:       rnd,
 		startTime: time.Now(),
 	}
-	go c.nextIDLoop()
-	go c.readRespLoop()
 	return c, nil
-}
-
-// nextIDLoop generates correlation IDs, making sure they are always in order
-// and within the scope of request-response mapping array.
-func (c *connection) nextIDLoop() {
-	var id int32 = 1
-	for {
-		select {
-		case <-c.stop:
-			close(c.nextID)
-			return
-		case c.nextID <- id:
-			id++
-			if id == math.MaxInt32 {
-				id = 1
-			}
-		}
-	}
-}
-
-// readRespLoop constantly reading response messages from the socket and after
-// partial parsing, sends byte representation of the whole message to request
-// sending process.
-func (c *connection) readRespLoop() {
-	defer func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		for _, cc := range c.respc {
-			close(cc)
-		}
-		c.respc = make(map[int32]chan []byte)
-	}()
-
-	rd := bufio.NewReader(c.rw)
-	for {
-		correlationID, b, err := proto.ReadResp(rd)
-		if err != nil {
-			c.mu.Lock()
-			if c.stopErr == nil {
-				c.stopErr = err
-				close(c.stop)
-			}
-			c.mu.Unlock()
-			return
-		}
-
-		c.mu.Lock()
-		rc, ok := c.respc[correlationID]
-		delete(c.respc, correlationID)
-		c.mu.Unlock()
-		if !ok {
-			log.Warningf("response to unknown request: %d", correlationID)
-			continue
-		}
-
-		select {
-		case <-c.stop:
-			c.mu.Lock()
-			if c.stopErr == nil {
-				c.stopErr = ErrClosed
-			}
-			c.mu.Unlock()
-		case rc <- b:
-		}
-		close(rc)
-	}
-}
-
-// respWaiter register listener to response message with given correlationID
-// and return channel that single response message will be pushed to once it
-// will arrive.
-// After pushing response message, channel is closed.
-//
-// Upon connection close, all unconsumed channels are closed.
-func (c *connection) respWaiter(correlationID int32) (respc chan []byte, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.stopErr != nil {
-		return nil, c.stopErr
-	}
-	if _, ok := c.respc[correlationID]; ok {
-		log.Errorf("correlation conflict: %d", correlationID)
-		return nil, fmt.Errorf("correlation conflict: %d", correlationID)
-	}
-	respc = make(chan []byte)
-	c.respc[correlationID] = respc
-	return respc, nil
-}
-
-// releaseWaiter removes response channel from waiters pool and close it.
-// Calling this method for unknown correlationID has no effect.
-func (c *connection) releaseWaiter(correlationID int32) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	rc, ok := c.respc[correlationID]
-	if ok {
-		delete(c.respc, correlationID)
-		close(rc)
-	}
 }
 
 // StartTime returns the time the connection was established.
@@ -164,49 +57,49 @@ func (c *connection) StartTime() time.Time {
 // Close close underlying transport connection and cancel all pending response
 // waiters.
 func (c *connection) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.stopErr == nil {
 		c.stopErr = ErrClosed
-		close(c.stop)
 	}
 	return c.rw.Close()
 }
 
 // IsClosed returns whether or not this connection has been stopped/closed.
 func (c *connection) IsClosed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	return c.stopErr != nil
+}
+
+// sendRequest handles the raw material of sending a request up to Kafka and
+// receiving the response.
+func (c *connection) sendRequest(req proto.Request, reqID int32) (*bytes.Reader, error) {
+	if _, err := req.WriteTo(c.rw); err != nil {
+		log.Errorf("cannot write: %s", err)
+		return nil, err
+	}
+
+	if correlationID, b, err := proto.ReadResp(c.rd); err != nil {
+		return nil, err
+	} else {
+		if correlationID != reqID {
+			c.Close()
+			return nil, fmt.Errorf("got unexpected correlation ID %d instead of %d",
+				correlationID, reqID)
+		}
+		return bytes.NewReader(b), nil
+	}
 }
 
 // Metadata sends given metadata request to kafka node and returns related
 // metadata response.
 // Calling this method on closed connection will always return ErrClosed.
 func (c *connection) Metadata(req *proto.MetadataReq) (*proto.MetadataResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
-
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
-	}
-
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
+	} else {
+		return proto.ReadMetadataResp(b)
 	}
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-	return proto.ReadMetadataResp(bytes.NewReader(b))
 }
 
 // Produce sends given produce request to kafka node and returns related
@@ -214,60 +107,39 @@ func (c *connection) Metadata(req *proto.MetadataReq) (*proto.MetadataResp, erro
 // right after sending request, without waiting for response.
 // Calling this method on closed connection will always return ErrClosed.
 func (c *connection) Produce(req *proto.ProduceReq) (*proto.ProduceResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
 
+	// This sad, dumb degenerate case is one where the server will never send us
+	// a response. We write blindly and return.
 	if req.RequiredAcks == proto.RequiredAcksNone {
 		_, err := req.WriteTo(c.rw)
 		return nil, err
 	}
 
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
-	}
-
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+	// Normal workflow
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
+	} else {
+		return proto.ReadProduceResp(b)
 	}
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-	return proto.ReadProduceResp(bytes.NewReader(b))
 }
 
 // Fetch sends given fetch request to kafka node and returns related response.
 // Calling this method on closed connection will always return ErrClosed.
 func (c *connection) Fetch(req *proto.FetchReq) (*proto.FetchResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
-	}
+	var resp *proto.FetchResp
 
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
-
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
-	}
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-	resp, err := proto.ReadFetchResp(bytes.NewReader(b))
-	if err != nil {
-		return nil, err
+	} else {
+		if resp, err = proto.ReadFetchResp(b); err != nil {
+			return nil, err
+		}
 	}
 
 	// Compressed messages are returned in full batches for efficiency
@@ -296,99 +168,50 @@ func (c *connection) Fetch(req *proto.FetchReq) (*proto.FetchResp, error) {
 // Offset sends given offset request to kafka node and returns related response.
 // Calling this method on closed connection will always return ErrClosed.
 func (c *connection) Offset(req *proto.OffsetReq) (*proto.OffsetResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
-	}
-
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
 
 	// TODO(husio) documentation is not mentioning this directly, but I assume
 	// -1 is for non node clients
 	req.ReplicaID = -1
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
+	} else {
+		return proto.ReadOffsetResp(b)
 	}
-
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-
-	return proto.ReadOffsetResp(bytes.NewReader(b))
 }
 
 func (c *connection) GroupCoordinator(req *proto.GroupCoordinatorReq) (*proto.GroupCoordinatorResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
-	}
-
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
+	} else {
+		return proto.ReadGroupCoordinatorResp(b)
 	}
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-	return proto.ReadGroupCoordinatorResp(bytes.NewReader(b))
 }
 
 func (c *connection) OffsetCommit(req *proto.OffsetCommitReq) (*proto.OffsetCommitResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
-	}
-
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
+	} else {
+		return proto.ReadOffsetCommitResp(b)
 	}
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-	return proto.ReadOffsetCommitResp(bytes.NewReader(b))
 }
 
 func (c *connection) OffsetFetch(req *proto.OffsetFetchReq) (*proto.OffsetFetchResp, error) {
-	var ok bool
-	if req.CorrelationID, ok = <-c.nextID; !ok {
-		return nil, c.stopErr
+	if req.CorrelationID == 0 {
+		req.CorrelationID = c.rnd.Int31()
 	}
-	respc, err := c.respWaiter(req.CorrelationID)
-	if err != nil {
-		log.Errorf("failed waiting for response: %s", err)
-		return nil, fmt.Errorf("wait for response: %s", err)
-	}
-
-	if _, err := req.WriteTo(c.rw); err != nil {
-		log.Errorf("cannot write: %s", err)
-		c.releaseWaiter(req.CorrelationID)
+	if b, err := c.sendRequest(req, req.CorrelationID); err != nil {
 		return nil, err
+	} else {
+		return proto.ReadOffsetFetchResp(b)
 	}
-	b, ok := <-respc
-	if !ok {
-		return nil, c.stopErr
-	}
-	return proto.ReadOffsetFetchResp(bytes.NewReader(b))
 }

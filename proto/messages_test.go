@@ -16,20 +16,20 @@ func Test(t *testing.T) { TestingT(t) }
 
 type MessagesSuite struct{}
 
-type Request interface {
+type TestRequest interface {
 	Bytes() ([]byte, error)
 	WriteTo(w io.Writer) (int64, error)
 }
 
-var _ Request = &MetadataReq{}
-var _ Request = &ProduceReq{}
-var _ Request = &FetchReq{}
-var _ Request = &GroupCoordinatorReq{}
-var _ Request = &OffsetReq{}
-var _ Request = &OffsetCommitReq{}
-var _ Request = &OffsetFetchReq{}
+var _ TestRequest = &MetadataReq{}
+var _ TestRequest = &ProduceReq{}
+var _ TestRequest = &FetchReq{}
+var _ TestRequest = &GroupCoordinatorReq{}
+var _ TestRequest = &OffsetReq{}
+var _ TestRequest = &OffsetCommitReq{}
+var _ TestRequest = &OffsetFetchReq{}
 
-func testRequestSerialization(c *C, r Request) {
+func testRequestSerialization(c *C, r TestRequest) {
 	var buf bytes.Buffer
 	if n, err := r.WriteTo(&buf); err != nil {
 		c.Fatalf("could not write request to buffer: %s", err)

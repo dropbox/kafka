@@ -15,9 +15,13 @@ type logTestBackend struct {
 
 var logTest = &logTestBackend{mu: &sync.Mutex{}}
 
-func init() {
+func logInit() {
 	logMu.Lock()
 	defer logMu.Unlock()
+
+	if log != nil {
+		return
+	}
 
 	log = logging.MustGetLogger("KafkaClient")
 	log.SetBackend(logging.AddModuleLevel(logTest))

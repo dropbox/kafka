@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/dropbox/kafka/proto"
@@ -24,10 +25,7 @@ type connection struct {
 	rw        io.ReadWriteCloser
 	rd        *bufio.Reader
 	rnd       *rand.Rand
-
-	// stopErr is set if and only if this connection has been closed. If set, it indicates
-	// the error that closed the connection.
-	stopErr error
+	closed    *int32
 }
 
 // newConnection returns new, initialized connection or error
@@ -44,6 +42,7 @@ func newTCPConnection(address string, timeout time.Duration) (*connection, error
 		rw:        conn,
 		rd:        bufio.NewReader(conn),
 		rnd:       rnd,
+		closed:    new(int32),
 		startTime: time.Now(),
 	}
 	return c, nil
@@ -54,18 +53,18 @@ func (c *connection) StartTime() time.Time {
 	return c.startTime
 }
 
+// IsClosed returns whether or not this connection has been closed.
+func (c *connection) IsClosed() bool {
+	return atomic.LoadInt32(c.closed) == 1
+}
+
 // Close close underlying transport connection and cancel all pending response
 // waiters.
 func (c *connection) Close() error {
-	if c.stopErr == nil {
-		c.stopErr = ErrClosed
+	if atomic.CompareAndSwapInt32(c.closed, 0, 1) {
+		return c.rw.Close()
 	}
-	return c.rw.Close()
-}
-
-// IsClosed returns whether or not this connection has been stopped/closed.
-func (c *connection) IsClosed() bool {
-	return c.stopErr != nil
+	return nil
 }
 
 // sendRequest handles the raw material of sending a request up to Kafka and

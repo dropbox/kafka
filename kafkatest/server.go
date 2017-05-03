@@ -84,12 +84,17 @@ func (s *Server) Reset() {
 	s.offsets = make(map[string]map[int32]map[string]*topicOffset)
 }
 
-// Reset will clear out local messages and topics.
+// ResetTopic removes all messages and committed offsets for a topic, but
+// does not remove the topic or its partitions.
 func (s *Server) ResetTopic(topic string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.topics, topic)
+	if parts, ok := s.topics[topic]; ok {
+		for partitionID := range parts {
+			parts[partitionID] = make([]*proto.Message, 0)
+		}
+	}
 	delete(s.offsets, topic)
 }
 

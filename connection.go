@@ -17,6 +17,11 @@ import (
 // ErrClosed is returned as result of any request made using closed connection.
 var ErrClosed = errors.New("closed")
 
+type readResp struct {
+	bytes *bytes.Reader
+	err   error
+}
+
 // Low level abstraction over connection to Kafka. This structure is NOT THREAD
 // SAFE and must be only owned by one caller at a time.
 type connection struct {
@@ -25,6 +30,7 @@ type connection struct {
 	rw        io.ReadWriteCloser
 	rd        *bufio.Reader
 	rnd       *rand.Rand
+	timeout   time.Duration
 	closed    *int32
 }
 
@@ -44,6 +50,7 @@ func newTCPConnection(address string, timeout time.Duration) (*connection, error
 		rnd:       rnd,
 		closed:    new(int32),
 		startTime: time.Now(),
+		timeout:   timeout,
 	}
 	return c, nil
 }
@@ -67,9 +74,26 @@ func (c *connection) Close() error {
 	return nil
 }
 
-// sendRequest handles the raw material of sending a request up to Kafka and
-// receiving the response.
+// sendRequest calls sendRequestHelper with timeout, closing the connection if it is hit.
 func (c *connection) sendRequest(req proto.Request, reqID int32) (*bytes.Reader, error) {
+	readRespChan := make(chan readResp, 1)
+	go func() {
+		bytes, err := c.sendRequestHelper(req, reqID)
+		readRespChan <- readResp{bytes, err}
+	}()
+	select {
+	case result := <-readRespChan:
+		return result.bytes, result.err
+	case <-time.After(2 * c.timeout):
+		c.Close()
+		return nil, errors.New("sendRequest hit timeout.")
+	}
+}
+
+// sendRequestHelper handles the raw material of sending a request up to Kafka and
+// receiving the response.
+func (c *connection) sendRequestHelper(req proto.Request, reqID int32) (
+	*bytes.Reader, error) {
 	if _, err := req.WriteTo(c.rw); err != nil {
 		log.Errorf("cannot write: %s", err)
 		return nil, err

@@ -100,8 +100,7 @@ func (d *errorAverseRRProducer) Distribute(topic string, messages ...*proto.Mess
 	}
 	// We are now obligated to call Success or Failure on partitionData.
 	if offset, err := d.producer.Produce(topic, partitionData.Partition, messages...); err != nil {
-		err = fmt.Errorf("Failed to produce [%s:%d]: %s", topic, partitionData.Partition, err)
-		log.Error(err.Error())
+		log.Errorf("Failed to produce [%s:%d]: %s", topic, partitionData.Partition, err)
 		partitionData.Failure()
 		return 0, 0, err
 	} else {

@@ -86,7 +86,8 @@ func (c *connection) sendRequest(req proto.Request, reqID int32) (*bytes.Reader,
 		return result.bytes, result.err
 	case <-time.After(2 * c.timeout):
 		c.Close()
-		return nil, errors.New("sendRequest hit timeout.")
+		log.Warning("sendRequest hit timeout")
+		return nil, proto.ErrRequestTimeout
 	}
 }
 

@@ -1114,7 +1114,7 @@ func (c *offsetCoordinator) Offset(
 					// but adding debugging in the meantime.
 					if p.Offset < 0 {
 						log.Errorf("negative offset response %d for %s:%d",
-				  			p.Offset, t.Name, p.Id)	
+				  			p.Offset, t.Name, p.ID)	
 					}
 					return p.Offset, p.Metadata, nil
 				}

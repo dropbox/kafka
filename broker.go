@@ -1001,7 +1001,7 @@ func (c *offsetCoordinator) CommitFull(topic string, partition int32, offset int
 // handling configurable through OffsetCoordinatorConf.
 func (c *offsetCoordinator) commit(
 	topic string, partition int32, offset int64, metadata string) (resErr error) {
-	// Eliminate the secnario where Kafka erroneously returns -1 as the offset
+	// Eliminate the scenario where Kafka erroneously returns -1 as the offset
 	// which then gets made permanent via an immediate flush.
 	//
 	// Technically this disallows a valid use case of rewinding a consumer

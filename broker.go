@@ -1108,6 +1108,14 @@ func (c *offsetCoordinator) Offset(
 					if p.Err != nil {
 						return 0, "", p.Err
 					}
+					// This is expected in and only in the case where the consumer group, topic
+					// pair is brand new. However, it appears there may be race conditions
+					// where Kafka returns -1 erroneously. Not sure how to handle this yet,
+					// but adding debugging in the meantime.
+					if p.Offset < 0 {
+						log.Errorf("negative offset response %d for %s:%d",
+				  			p.Offset, t.Name, p.ID)	
+					}
 					return p.Offset, p.Metadata, nil
 				}
 			}

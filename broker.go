@@ -1010,7 +1010,7 @@ func (c *offsetCoordinator) commit(
 	// 2) this restriction only applies to partitions with a non-expired
 	// message at offset 0.
 	if offset < 0 {
-		return errors.Newf("Cannot commit negative offset %d for [%s:%d].",
+		return fmt.Errorf("Cannot commit negative offset %d for [%s:%d].",
 			offset, topic, partition)	
 	}
 	

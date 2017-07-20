@@ -1001,7 +1001,18 @@ func (c *offsetCoordinator) CommitFull(topic string, partition int32, offset int
 // handling configurable through OffsetCoordinatorConf.
 func (c *offsetCoordinator) commit(
 	topic string, partition int32, offset int64, metadata string) (resErr error) {
-
+	// Eliminate the secnario where Kafka erroneously returns -1 as the offset
+	// which then gets made permanent via an immediate flush.
+	//
+	// Technically this disallows a valid use case of rewinding a consumer
+	// group to the beginning, but 1) this isn't possible through any API we
+	// currently expose since you cannot have a message numbered -1 in hand;
+	// 2) this restriction only applies to partitions with a non-expired
+	// message at offset 0.
+	if offset < 0 {
+		return errors.Newf("Cannot commit negative offset %d.", offset)	
+	}
+	
 	retry := &backoff.Backoff{Min: c.conf.RetryErrWait, Jitter: true}
 	for try := 0; try < c.conf.RetryErrLimit; try++ {
 		if try != 0 {

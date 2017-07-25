@@ -1011,9 +1011,9 @@ func (c *offsetCoordinator) commit(
 	// message at offset 0.
 	if offset < 0 {
 		return fmt.Errorf("Cannot commit negative offset %d for [%s:%d].",
-			offset, topic, partition)	
+			offset, topic, partition)
 	}
-	
+
 	retry := &backoff.Backoff{Min: c.conf.RetryErrWait, Jitter: true}
 	for try := 0; try < c.conf.RetryErrLimit; try++ {
 		if try != 0 {
@@ -1036,7 +1036,7 @@ func (c *offsetCoordinator) commit(
 				{
 					Name: topic,
 					Partitions: []proto.OffsetCommitReqPartition{
-						{ID: partition, Offset: offset, TimeStamp: time.Now(), Metadata: metadata},
+						{ID: partition, Offset: offset, Metadata: metadata},
 					},
 				},
 			},
@@ -1126,7 +1126,7 @@ func (c *offsetCoordinator) Offset(
 					// but adding debugging in the meantime.
 					if p.Offset < 0 {
 						log.Errorf("negative offset response %d for %s:%d",
-				  			p.Offset, t.Name, p.ID)	
+							p.Offset, t.Name, p.ID)
 					}
 					return p.Offset, p.Metadata, nil
 				}

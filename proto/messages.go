@@ -884,7 +884,7 @@ func (r *OffsetCommitReq) Bytes() ([]byte, error) {
 		for _, part := range topic.Partitions {
 			enc.Encode(part.ID)
 			enc.Encode(part.Offset)
-			enc.Encode(int64(0))
+			enc.Encode(int64(-1)) // -1 is "use current time"
 			enc.Encode(part.Metadata)
 		}
 	}

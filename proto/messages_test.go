@@ -179,7 +179,7 @@ func (s *MessagesSuite) TestProduceRequest(c *C) {
 		b, _ := req.Bytes()
 
 		if !bytes.Equal(b, tt.Expected) {
-			c.Fatalf("expected different bytes representation: %#v", b)
+			c.Fatalf("expected different bytes representation: %#v != %#v", b, tt.Expected)
 		}
 
 		r, _ := ReadProduceReq(bytes.NewBuffer(tt.Expected))

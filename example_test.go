@@ -17,7 +17,7 @@ func ExampleConsumer() {
 
 	// create new consumer
 	conf := NewConsumerConf("my-messages", 0)
-	conf.StartOffset = StartOffsetNewest
+	conf.StartFrom = StartFromNewest
 	consumer, err := broker.Consumer(conf)
 	if err != nil {
 		panic(err)

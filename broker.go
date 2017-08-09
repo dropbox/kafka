@@ -14,14 +14,21 @@ import (
 	"github.com/jpillora/backoff"
 )
 
-const (
-	// StartOffsetNewest configures the consumer to fetch messages produced
-	// after creating the consumer.
-	StartOffsetNewest = -1
+// StartFrom specifies how to determine which offset to start from.
+type StartFrom int
 
-	// StartOffsetOldest configures the consumer to fetch starting from the
+const (
+	// StartFromNewest configures the consumer to fetch messages produced
+	// after creating the consumer.
+	StartFromNewest StartFrom = iota
+
+	// StartFromOldest configures the consumer to fetch starting from the
 	// oldest message available.
-	StartOffsetOldest = -2
+	StartFromOldest
+
+	// StartFromAbsolute configures the consumer to fetch messages starting from the
+	// exact offset specified in the StartOffset field.
+	StartFromAbsolute
 )
 
 var (
@@ -720,13 +727,19 @@ type ConsumerConf struct {
 	// Default is 2000000 bytes.
 	MaxFetchSize int32
 
-	// Consumer cursor starting point. Set to StartOffsetNewest to receive only
-	// newly created messages or StartOffsetOldest to read everything. Assign
-	// any offset value to manually set cursor -- consuming starts with the
-	// message whose offset is equal to given value (including first message).
+	// Consumer cursor starting point, relative to the start or end of the partition or
+	// AbsoluteStartOffset.
+	// Set to StartFromNewest to receive only newly created messages or StartFromOldest to
+	// read everything. Defaults to StartFromOldest. If set to StartFromAbsolute, the value
+	// of the uint64 AbsoluteStartOffset is used instead.
+	StartFrom StartFrom
+
+	// Consumer cursor starting point. Consuming starts with the
+	// message whose offset is equal to given value (including first message). Defaults to 0.
 	//
-	// Default is StartOffsetOldest.
-	StartOffset int64
+	// If StartFrom is not set to StartFromAbsolute, StartOffset must be unset or the default
+	// value of 0.
+	StartOffset uint64
 }
 
 // NewConsumerConf returns the default consumer configuration.
@@ -741,7 +754,8 @@ func NewConsumerConf(topic string, partition int32) ConsumerConf {
 		RetryErrWait:   time.Millisecond * 500,
 		MinFetchSize:   1,
 		MaxFetchSize:   2000000,
-		StartOffset:    StartOffsetOldest,
+		StartFrom:      StartFromOldest,
+		StartOffset:    0,
 	}
 }
 
@@ -768,24 +782,27 @@ func (b *Broker) BatchConsumer(conf ConsumerConf) (BatchConsumer, error) {
 }
 
 func (b *Broker) consumer(conf ConsumerConf) (*consumer, error) {
-	offset := conf.StartOffset
-	if offset < 0 {
-		switch offset {
-		case StartOffsetNewest:
-			off, err := b.OffsetLatest(conf.Topic, conf.Partition)
-			if err != nil {
-				return nil, err
-			}
-			offset = off
-		case StartOffsetOldest:
-			off, err := b.OffsetEarliest(conf.Topic, conf.Partition)
-			if err != nil {
-				return nil, err
-			}
-			offset = off
-		default:
-			return nil, fmt.Errorf("invalid start offset: %d", conf.StartOffset)
+	var offset int64
+	switch {
+	case conf.StartFrom == StartFromAbsolute:
+		offset = int64(conf.StartOffset)
+	case conf.StartOffset != 0:
+		return nil, fmt.Errorf("Set AbsoluteStartOffset uint64 (%d) with non-StartOffsetAbsolute (%d).",
+			conf.StartOffset, conf.StartFrom)
+	case conf.StartFrom == StartFromNewest:
+		off, err := b.OffsetLatest(conf.Topic, conf.Partition)
+		if err != nil {
+			return nil, err
 		}
+		offset = off
+	case conf.StartFrom == StartFromOldest:
+		off, err := b.OffsetEarliest(conf.Topic, conf.Partition)
+		if err != nil {
+			return nil, err
+		}
+		offset = off
+	default:
+		return nil, fmt.Errorf("invalid start offset: %d", conf.StartFrom)
 	}
 	c := &consumer{
 		broker: b,

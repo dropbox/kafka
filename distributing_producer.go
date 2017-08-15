@@ -68,7 +68,7 @@ type errorAverseRRProducer struct {
 type NoPartitionsAvailable struct{}
 
 func (NoPartitionsAvailable) Error() string {
-	return "No partitions available within timeout."
+	return "All partitions suspended due to previous failures, refusing to attempt the produce."
 }
 
 func NewErrorAverseRRProducer(conf *errorAverseRRProducerConf) DistributingProducer {

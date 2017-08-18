@@ -559,7 +559,7 @@ func (s *BrokerSuite) TestConsumer(c *C) {
 
 	consConf := NewConsumerConf("test", 413)
 	consConf.RetryWait = time.Millisecond
-	consConf.StartOffset = 0
+	consConf.StartFrom = 0
 	consConf.RetryLimit = 4
 	consumer, err := broker.Consumer(consConf)
 	c.Assert(err, IsNil)
@@ -662,7 +662,7 @@ func (s *BrokerSuite) TestBatchConsumer(c *C) {
 
 	consConf := NewConsumerConf("test", 413)
 	consConf.RetryWait = time.Millisecond
-	consConf.StartOffset = 0
+	consConf.StartFrom = 0
 	consConf.RetryLimit = 4
 	consumer, err := broker.BatchConsumer(consConf)
 	c.Assert(err, IsNil)
@@ -740,7 +740,7 @@ func (s *BrokerSuite) TestConsumerRetry(c *C) {
 
 	consConf := NewConsumerConf("test", 0)
 	consConf.RetryLimit = 5
-	consConf.StartOffset = 0
+	consConf.StartFrom = 0
 	consConf.RetryWait = time.Millisecond
 	consumer, err := broker.Consumer(consConf)
 	c.Assert(err, IsNil)
@@ -787,7 +787,7 @@ func (s *BrokerSuite) TestConsumeInvalidOffset(c *C) {
 	c.Assert(err, IsNil)
 
 	consConf := NewConsumerConf("test", 0)
-	consConf.StartOffset = 4
+	consConf.StartFrom = 4
 	consumer, err := broker.Consumer(consConf)
 	c.Assert(err, IsNil)
 
@@ -1232,7 +1232,7 @@ func (s *BrokerSuite) TestConsumeWhilePartitionMoves(c *C) {
 	defer broker.Close()
 
 	conf := NewConsumerConf("test", 1)
-	conf.StartOffset = 0
+	conf.StartFrom = 0
 	cons, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)
 
@@ -1766,7 +1766,7 @@ func (s *BrokerSuite) TestConsumeWhileLeaderChange(c *C) {
 	defer broker.Close()
 
 	conf := NewConsumerConf("test", 1)
-	conf.StartOffset = 0
+	conf.StartFrom = 0
 	cons, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)
 
@@ -1845,7 +1845,7 @@ func (s *BrokerSuite) TestConsumerFailover(c *C) {
 	conf.RetryWait = time.Nanosecond
 	conf.RetryLimit = 4
 	conf.RetryErrWait = time.Nanosecond
-	conf.StartOffset = 0
+	conf.StartFrom = 0
 
 	consumer, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)
@@ -2041,7 +2041,7 @@ func (s *BrokerSuite) TestFetchOffset(c *C) {
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
-	conf.StartOffset = offset
+	conf.StartFrom = offset
 	consumer, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)
 
@@ -2168,7 +2168,7 @@ func (s *BrokerSuite) TestConsumerBrokenPipe(c *C) {
 	conf := NewConsumerConf("test", 0)
 	conf.RetryErrWait = time.Millisecond
 	conf.RetryWait = time.Millisecond
-	conf.StartOffset = 0
+	conf.StartFrom = 0
 	consumer, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)
 
@@ -2345,7 +2345,7 @@ func (s *BrokerSuite) benchmarkConsumer(c *C, messagesPerResp int) {
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
-	conf.StartOffset = 0
+	conf.StartFrom = 0
 
 	consumer, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)
@@ -2410,7 +2410,7 @@ func (s *BrokerSuite) benchmarkConsumerConcurrent(c *C, concurrentConsumers int)
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
-	conf.StartOffset = 0
+	conf.StartFrom = 0
 
 	consumer, err := broker.Consumer(conf)
 	c.Assert(err, IsNil)

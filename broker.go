@@ -15,13 +15,13 @@ import (
 )
 
 const (
-	// StartOffsetNewest configures the consumer to fetch messages produced
-	// after creating the consumer.
-	StartOffsetNewest = -1
-
 	// StartOffsetOldest configures the consumer to fetch starting from the
 	// oldest message available.
-	StartOffsetOldest = -2
+	StartOffsetOldest = -1
+	
+	// StartOffsetNewest configures the consumer to fetch messages produced
+	// after creating the consumer.
+	StartOffsetNewest = -2
 )
 
 var (

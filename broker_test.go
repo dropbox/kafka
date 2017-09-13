@@ -528,7 +528,7 @@ func (s *BrokerSuite) TestConsumer(c *C) {
 		messages := []*proto.Message{
 			{Offset: 3, Key: []byte("1"), Value: []byte("first")},
 			{Offset: 4, Key: []byte("2"), Value: []byte("second")},
-			{Offset: 5, Key: []byte("3"), Value: []byte("three")},
+			{Offset: 5, Key: []byte("3"), Value: []byte("third")},
 		}
 
 		return &proto.FetchResp{
@@ -631,7 +631,7 @@ func (s *BrokerSuite) TestBatchConsumer(c *C) {
 		messages := []*proto.Message{
 			{Offset: 3, Key: []byte("1"), Value: []byte("first")},
 			{Offset: 4, Key: []byte("2"), Value: []byte("second")},
-			{Offset: 5, Key: []byte("3"), Value: []byte("three")},
+			{Offset: 5, Key: []byte("3"), Value: []byte("third")},
 		}
 
 		return &proto.FetchResp{
@@ -679,7 +679,7 @@ func (s *BrokerSuite) TestBatchConsumer(c *C) {
 		c.Fatalf("expected different message than %#v", batch[1])
 	}
 
-	if string(batch[2].Value) != "three" || string(batch[2].Key) != "3" || batch[2].Offset != 5 {
+	if string(batch[2].Value) != "third" || string(batch[2].Key) != "3" || batch[2].Offset != 5 {
 		c.Fatalf("expected different message than %#v", batch[2])
 	}
 
@@ -764,7 +764,7 @@ func (s *BrokerSuite) TestConsumeInvalidOffset(c *C) {
 			// return message with offset lower than requested
 			{Offset: 3, Key: []byte("1"), Value: []byte("first")},
 			{Offset: 4, Key: []byte("2"), Value: []byte("second")},
-			{Offset: 5, Key: []byte("3"), Value: []byte("three")},
+			{Offset: 5, Key: []byte("3"), Value: []byte("third")},
 		}
 		return &proto.FetchResp{
 			CorrelationID: req.CorrelationID,
@@ -1309,7 +1309,7 @@ func (s *BrokerSuite) TestConsumerSeekToLatest(c *C) {
 		messages := []*proto.Message{
 			{Offset: 3, Key: []byte("1"), Value: []byte("first")},
 			{Offset: 4, Key: []byte("2"), Value: []byte("second")},
-			{Offset: 5, Key: []byte("3"), Value: []byte("three")},
+			{Offset: 5, Key: []byte("3"), Value: []byte("third")},
 		}
 
 		return &proto.FetchResp{
@@ -1337,8 +1337,8 @@ func (s *BrokerSuite) TestConsumerSeekToLatest(c *C) {
 					Name: "test",
 					Partitions: []proto.OffsetRespPartition{
 						{
-							ID:      1,
-							Offsets: []int64{5, 0},
+							ID:      413,
+							Offsets: []int64{4, 0},
 							Err:     nil,
 						},
 					},

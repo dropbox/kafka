@@ -878,6 +878,7 @@ func (c *consumer) SeekToLatest() error {
 	} else {
 		c.offset = off + 1
 		c.msgbuf = make([]*proto.Message, 0)
+		log.Infof("SeekToLatest moving [%s:%d] to offset %d.", c.conf.Topic, c.conf.Partition, c.offset)
 		return nil
 	}
 }

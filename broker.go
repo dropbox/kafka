@@ -51,11 +51,13 @@ type Client interface {
 }
 
 // Consumer is the interface that wraps the Consume method.
-//
-// Consume reads a message from a consumer, returning an error when
-// encountered.
 type Consumer interface {
+	// Consume reads a message from a consumer, returning an error when encountered.
 	Consume() (*proto.Message, error)
+	// SeekToLatest advances the Consumer's offset to the newest messages available, affecting
+	// future calls to Consume. Calling this method violates the ALO guarantees normally associated
+	// with Kafka consumption.
+	SeekToLatest() error
 }
 
 // BatchConsumer is the interface that wraps the ConsumeBatch method.
@@ -321,7 +323,6 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 // date).
 func (b *Broker) leaderConnection(topic string, partition int32) (*connection, error) {
 	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
-	var resErr error
 	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
 		if try != 0 {
 			sleepFor := retry.Duration()
@@ -337,7 +338,6 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 		// Figure out which broker (node/endpoint) is presently leader for this t/p
 		nodeID, err := b.getLeaderEndpoint(topic, partition)
 		if err != nil {
-			resErr = err
 			continue
 		}
 
@@ -348,23 +348,24 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 				topic, partition, nodeID)
 			b.metadata.ForgetEndpoint(topic, partition)
 		} else {
+			// TODO: Can this return a non-nil error if the connection pool is full?
 			if conn, err := b.conns.GetConnectionByAddr(addr); err != nil {
-				resErr = err
+				// Forget the endpoint. It's possible this broker has failed and we want to wait
+				// for Kafka to elect a new leader. To trick our algorithm into working we have to
+				// forget this endpoint so it will refresh metadata.
 				log.Warningf("[leaderConnection %s:%d] failed to connect to %s: %s",
 					topic, partition, addr, err)
-				if _, ok := err.(*NoConnectionsAvailable); !ok {
-					// Forget the endpoint. It's possible this broker has failed and we want to wait
-					// for Kafka to elect a new leader. To trick our algorithm into working we have to
-					// forget this endpoint so it will refresh metadata.
-					b.metadata.ForgetEndpoint(topic, partition)
-				}
+				b.metadata.ForgetEndpoint(topic, partition)
 			} else {
 				// Successful (supposedly) connection
 				return conn, nil
 			}
 		}
 	}
-	return nil, resErr
+
+	// All paths lead to the topic/partition being unknown, a more specific error would have
+	// been returned earlier
+	return nil, proto.ErrUnknownTopicOrPartition
 }
 
 // coordinatorConnection returns connection to offset coordinator for given group. May
@@ -600,12 +601,9 @@ func (p *producer) Produce(
 	case io.EOF, syscall.EPIPE:
 		// Connection dying / network issues won't be fixed by a metadata refresh.
 	default:
-		// NoConnectionsAvailable also indicates the issue won't be fixed by metadata refresh.
-		if _, ok := err.(*NoConnectionsAvailable); !ok {
-			// Try to refresh metadata in the background, in case the produce failed due to stale
-			// leadership information.
-			go p.broker.metadata.Refresh()
-		}
+		// Try to refresh metadata in the background, in case the produce failed due to stale
+		// leadership information.
+		go p.broker.metadata.Refresh()
 	}
 	return offset, err
 }
@@ -865,6 +863,19 @@ func (c *consumer) ConsumeBatch() ([]*proto.Message, error) {
 	c.offset = batch[len(batch)-1].Offset + 1
 
 	return batch, nil
+}
+
+func (c *consumer) SeekToLatest() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if off, err := c.broker.OffsetLatest(c.conf.Topic, c.conf.Partition); err != nil {
+		return err
+	} else {
+		c.offset = off + 1
+		c.msgbuf = make([]*proto.Message, 0)
+		return nil
+	}
 }
 
 // fetch and return next batch of messages. In case of certain set of errors,

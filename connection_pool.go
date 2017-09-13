@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+type NoConnectionsAvailable struct{}
+
+func (NoConnectionsAvailable) Error() string {
+	return "[transient] Connection pool is full (did not attempt to create new connection)."
+}
+
 // backend stores information about a given backend. All access to this data should be done
 // through methods to ensure accurate counting and limiting.
 type backend struct {
@@ -44,25 +50,26 @@ func (b *backend) GetIdleConnection() *connection {
 // establish a new connection if we aren't at the limit. If we are, then continue waiting
 // in increments of the idle time for a connection or the limit to come down before making
 // a new connection. This could potentially block up to the DialTimeout.
-func (b *backend) GetConnection() *connection {
+//
+// If the error returned is NoConnectionsAvailable, the caller should treat it as transient
+// and not consider the backend/addr unhealthy.
+func (b *backend) GetConnection() (*connection, error) {
 	dialTimeout := time.After(b.conf.DialTimeout)
 	for {
 		select {
 		case <-dialTimeout:
-			return nil
+			return nil, &NoConnectionsAvailable{}
 
 		case conn := <-b.channel:
 			if !conn.IsClosed() {
-				return conn
+				return conn, nil
 			}
 			b.removeConnection(conn)
 
 		case <-time.After(time.Duration(rndIntn(int(b.conf.IdleConnectionWait)))):
 			conn, err := b.getNewConnection()
-			if err != nil {
-				return nil
-			} else if conn != nil {
-				return conn
+			if err != nil || conn != nil {
+				return conn, err
 			}
 		}
 	}
@@ -298,17 +305,17 @@ func (cp *connectionPool) GetIdleConnection() *connection {
 // GetConnectionByAddr takes an address and returns a valid/open connection to this server.
 // We attempt to reuse connections if we can, but if a connection is not available within
 // IdleConnectionWait then we'll establish a new one. This can block a long time.
+//
+// See comments on GetConnection for details on the error returned.
 func (cp *connectionPool) GetConnectionByAddr(addr string) (*connection, error) {
 	if cp.IsClosed() {
 		return nil, errors.New("connection pool is closed")
 	}
 
 	if be := cp.getBackend(addr); be != nil {
-		if conn := be.GetConnection(); conn != nil {
-			return conn, nil
-		}
+		return be.GetConnection()
 	}
-	return nil, errors.New("failed to get connection")
+	return nil, errors.New("no backend for addr")
 }
 
 // Close sets the connection pool's end state, no further connections will be returned

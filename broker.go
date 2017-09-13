@@ -18,7 +18,7 @@ const (
 	// StartOffsetOldest configures the consumer to fetch starting from the
 	// oldest message available.
 	StartOffsetOldest = -1
-	
+
 	// StartOffsetNewest configures the consumer to fetch messages produced
 	// after creating the consumer.
 	StartOffsetNewest = -2
@@ -321,6 +321,7 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 // date).
 func (b *Broker) leaderConnection(topic string, partition int32) (*connection, error) {
 	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
+	var resErr error
 	for try := 0; try < b.conf.LeaderRetryLimit; try++ {
 		if try != 0 {
 			sleepFor := retry.Duration()
@@ -336,6 +337,7 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 		// Figure out which broker (node/endpoint) is presently leader for this t/p
 		nodeID, err := b.getLeaderEndpoint(topic, partition)
 		if err != nil {
+			resErr = err
 			continue
 		}
 
@@ -346,24 +348,23 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 				topic, partition, nodeID)
 			b.metadata.ForgetEndpoint(topic, partition)
 		} else {
-			// TODO: Can this return a non-nil error if the connection pool is full?
 			if conn, err := b.conns.GetConnectionByAddr(addr); err != nil {
-				// Forget the endpoint. It's possible this broker has failed and we want to wait
-				// for Kafka to elect a new leader. To trick our algorithm into working we have to
-				// forget this endpoint so it will refresh metadata.
+				resErr = err
 				log.Warningf("[leaderConnection %s:%d] failed to connect to %s: %s",
 					topic, partition, addr, err)
-				b.metadata.ForgetEndpoint(topic, partition)
+				if _, ok := err.(*NoConnectionsAvailable); !ok {
+					// Forget the endpoint. It's possible this broker has failed and we want to wait
+					// for Kafka to elect a new leader. To trick our algorithm into working we have to
+					// forget this endpoint so it will refresh metadata.
+					b.metadata.ForgetEndpoint(topic, partition)
+				}
 			} else {
 				// Successful (supposedly) connection
 				return conn, nil
 			}
 		}
 	}
-
-	// All paths lead to the topic/partition being unknown, a more specific error would have
-	// been returned earlier
-	return nil, proto.ErrUnknownTopicOrPartition
+	return nil, resErr
 }
 
 // coordinatorConnection returns connection to offset coordinator for given group. May
@@ -599,9 +600,12 @@ func (p *producer) Produce(
 	case io.EOF, syscall.EPIPE:
 		// Connection dying / network issues won't be fixed by a metadata refresh.
 	default:
-		// Try to refresh metadata in the background, in case the produce failed due to stale
-		// leadership information.
-		go p.broker.metadata.Refresh()
+		// NoConnectionsAvailable also indicates the issue won't be fixed by metadata refresh.
+		if _, ok := err.(*NoConnectionsAvailable); !ok {
+			// Try to refresh metadata in the background, in case the produce failed due to stale
+			// leadership information.
+			go p.broker.metadata.Refresh()
+		}
 	}
 	return offset, err
 }

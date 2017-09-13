@@ -1256,6 +1256,124 @@ func (s *BrokerSuite) TestConsumeWhilePartitionMoves(c *C) {
 	c.Assert(fetch3Calls, Equals, 1)
 }
 
+func (s *BrokerSuite) TestConsumerSeekToLatest(c *C) {
+	srv := NewServer()
+	srv.Start()
+	defer srv.Close()
+
+	srv.Handle(MetadataRequest, func(request Serializable) Serializable {
+		req := request.(*proto.MetadataReq)
+		host, port := srv.HostPort()
+		return &proto.MetadataResp{
+			CorrelationID: req.CorrelationID,
+			Brokers: []proto.MetadataRespBroker{
+				{NodeID: 1, Host: host, Port: int32(port)},
+			},
+			Topics: []proto.MetadataRespTopic{
+				{
+					Name: "test",
+					Partitions: []proto.MetadataRespPartition{
+						{
+							ID:       413,
+							Leader:   1,
+							Replicas: []int32{1},
+							Isrs:     []int32{1},
+						},
+					},
+				},
+			},
+		}
+	})
+	fetchCallCount := 0
+	srv.Handle(FetchRequest, func(request Serializable) Serializable {
+		req := request.(*proto.FetchReq)
+		fetchCallCount++
+		if fetchCallCount < 2 {
+			return &proto.FetchResp{
+				CorrelationID: req.CorrelationID,
+				Topics: []proto.FetchRespTopic{
+					{
+						Name: "test",
+						Partitions: []proto.FetchRespPartition{
+							{
+								ID:        413,
+								TipOffset: 0,
+								Messages:  []*proto.Message{},
+							},
+						},
+					},
+				},
+			}
+		}
+
+		messages := []*proto.Message{
+			{Offset: 3, Key: []byte("1"), Value: []byte("first")},
+			{Offset: 4, Key: []byte("2"), Value: []byte("second")},
+			{Offset: 5, Key: []byte("3"), Value: []byte("three")},
+		}
+
+		return &proto.FetchResp{
+			CorrelationID: req.CorrelationID,
+			Topics: []proto.FetchRespTopic{
+				{
+					Name: "test",
+					Partitions: []proto.FetchRespPartition{
+						{
+							ID:        413,
+							TipOffset: 2,
+							Messages:  messages,
+						},
+					},
+				},
+			},
+		}
+	})
+	srv.Handle(OffsetRequest, func(request Serializable) Serializable {
+		req := request.(*proto.OffsetReq)
+		return &proto.OffsetResp{
+			CorrelationID: req.CorrelationID,
+			Topics: []proto.OffsetRespTopic{
+				{
+					Name: "test",
+					Partitions: []proto.OffsetRespPartition{
+						{
+							ID:      1,
+							Offsets: []int64{5, 0},
+							Err:     nil,
+						},
+					},
+				},
+			},
+		}
+	})
+
+	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	c.Assert(err, IsNil)
+
+	consConf := NewConsumerConf("test", 413)
+	consConf.RetryWait = time.Millisecond
+	consConf.StartOffset = 0
+	consConf.RetryLimit = 4
+	consumer, err := broker.Consumer(consConf)
+	c.Assert(err, IsNil)
+
+	msg1, err := consumer.Consume()
+	c.Assert(err, IsNil)
+	if string(msg1.Value) != "first" || string(msg1.Key) != "1" || msg1.Offset != 3 {
+		c.Fatalf("expected different message than %#v", msg1)
+	}
+
+	err = consumer.SeekToLatest()
+	c.Assert(err, IsNil)
+
+	msg2, err := consumer.Consume()
+	c.Assert(err, IsNil)
+	if string(msg2.Value) != "third" || string(msg2.Key) != "3" || msg2.Offset != 5 {
+		c.Fatalf("expected different message than %#v", msg2)
+	}
+	broker.Close()
+}
+
 func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
 	c.Skip("bad test, needs to be rewritten")
 

@@ -155,6 +155,22 @@ func (c *Consumer) Consume() (*proto.Message, error) {
 	}
 }
 
+// SeekToLatest discards all messages currently enqueued, unless an error is available first.
+func (c *Consumer) SeekToLatest() error {
+	select {
+	case err := <-c.Errors:
+		return err
+	default:
+		for {
+			select {
+			case _ = <-c.Messages:
+			default:
+				return nil
+			}
+		}
+	}
+}
+
 // Producer mocks kafka's producer.
 type Producer struct {
 	Broker *Broker

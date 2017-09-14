@@ -51,11 +51,13 @@ type Client interface {
 }
 
 // Consumer is the interface that wraps the Consume method.
-//
-// Consume reads a message from a consumer, returning an error when
-// encountered.
 type Consumer interface {
+	// Consume reads a message from a consumer, returning an error when encountered.
 	Consume() (*proto.Message, error)
+	// SeekToLatest advances the Consumer's offset to the newest messages available, affecting
+	// future calls to Consume. Calling this method violates the ALO guarantees normally associated
+	// with Kafka consumption.
+	SeekToLatest() error
 }
 
 // BatchConsumer is the interface that wraps the ConsumeBatch method.
@@ -865,6 +867,20 @@ func (c *consumer) ConsumeBatch() ([]*proto.Message, error) {
 	c.offset = batch[len(batch)-1].Offset + 1
 
 	return batch, nil
+}
+
+func (c *consumer) SeekToLatest() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if off, err := c.broker.OffsetLatest(c.conf.Topic, c.conf.Partition); err != nil {
+		return err
+	} else {
+		c.offset = off + 1
+		c.msgbuf = make([]*proto.Message, 0)
+		log.Infof("SeekToLatest moving [%s:%d] to offset %d.", c.conf.Topic, c.conf.Partition, c.offset)
+		return nil
+	}
 }
 
 // fetch and return next batch of messages. In case of certain set of errors,

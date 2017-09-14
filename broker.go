@@ -876,9 +876,11 @@ func (c *consumer) SeekToLatest() error {
 	if off, err := c.broker.OffsetLatest(c.conf.Topic, c.conf.Partition); err != nil {
 		return err
 	} else {
-		c.offset = off + 1
+		oldOffset := c.offset
+		c.offset = off
 		c.msgbuf = make([]*proto.Message, 0)
-		log.Infof("SeekToLatest moving [%s:%d] to offset %d.", c.conf.Topic, c.conf.Partition, c.offset)
+		log.Infof("SeekToLatest moving [%s:%d] offset %d -> %d.",
+			c.conf.Topic, c.conf.Partition, oldOffset, c.offset)
 		return nil
 	}
 }

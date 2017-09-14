@@ -1338,7 +1338,7 @@ func (s *BrokerSuite) TestConsumerSeekToLatest(c *C) {
 					Partitions: []proto.OffsetRespPartition{
 						{
 							ID:      413,
-							Offsets: []int64{4, 0},
+							Offsets: []int64{5, 0},
 							Err:     nil,
 						},
 					},

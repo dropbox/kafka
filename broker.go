@@ -119,7 +119,8 @@ type BrokerConf struct {
 	// Defaults to False.
 	AllowTopicCreation bool
 
-	// Any new connection dial timeout.
+	// Any new connection dial timeout. This must be at least double the
+	// IdleConnectionWait.
 	//
 	// Default is 10 seconds.
 	DialTimeout time.Duration
@@ -166,7 +167,8 @@ type BrokerConf struct {
 
 	// IdleConnectionWait sets a timeout on how long we should wait for a connection to
 	// become idle before we establish a new one. This value sets a cap on how much latency
-	// you're willing to add to a request before establishing a new connection.
+	// you're willing to add to a request before establishing a new connection. This must
+	// be less than half the DialTimeout.
 	//
 	// Default is 200ms.
 	IdleConnectionWait time.Duration

@@ -83,6 +83,9 @@ func (c *connection) sendRequest(req proto.Request, reqID int32) (*bytes.Reader,
 	}()
 	select {
 	case result := <-readRespChan:
+		if result.err != nil {
+			c.Close()
+		}
 		return result.bytes, result.err
 	case <-time.After(2 * c.timeout):
 		c.Close()
@@ -95,6 +98,7 @@ func (c *connection) sendRequest(req proto.Request, reqID int32) (*bytes.Reader,
 // receiving the response.
 func (c *connection) sendRequestHelper(req proto.Request, reqID int32) (
 	*bytes.Reader, error) {
+
 	if _, err := req.WriteTo(c.rw); err != nil {
 		log.Errorf("cannot write: %s", err)
 		return nil, err

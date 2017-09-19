@@ -3,6 +3,8 @@ package kafka
 import (
 	"time"
 
+	"github.com/dropbox/kafka/proto"
+
 	. "gopkg.in/check.v1"
 )
 
@@ -79,6 +81,51 @@ func (s *ConnectionPoolSuite) TestConnectionLimit(c *C) {
 	c.Assert(be.NumOpenConnections(), Equals, 2)
 	cp.Idle(conn)
 	c.Assert(be.NumOpenConnections(), Equals, 1)
+}
+
+func (s *ConnectionPoolSuite) TestGetConnectionError(c *C) {
+	srv := NewServer()
+	srv.Start()
+
+	conf := NewBrokerConf("foo")
+	conf.ConnectionLimit = 1
+	conf.DialTimeout = 1 * time.Second
+	conf.IdleConnectionWait = 200 * time.Millisecond
+
+	cp := newConnectionPool(conf)
+	cp.InitializeAddrs([]string{srv.Address()})
+	be := cp.getBackend(srv.Address())
+
+	// First connection should work
+	conn, err := cp.GetConnectionByAddr(srv.Address())
+	c.Assert(err, IsNil)
+	c.Assert(conn, NotNil)
+	c.Assert(be.NumOpenConnections(), Equals, 1)
+
+	// Second connection should return NoConnectionsAvailable because
+	// we're at the connection limit
+	conn2, err := cp.GetConnectionByAddr(srv.Address())
+	c.Assert(err, NotNil)
+	_, ok := err.(*NoConnectionsAvailable)
+	c.Assert(ok, Equals, true)
+	c.Assert(conn2, IsNil)
+	c.Assert(be.NumOpenConnections(), Equals, 1)
+
+	// Close the server
+	srv.Close()
+	_, err = conn.Metadata(&proto.MetadataReq{})
+	c.Assert(err, NotNil)
+	c.Assert(conn.IsClosed(), Equals, true)
+	be.Idle(conn)
+
+	// Now getting a connection should return a different error b/c
+	// it can't connect -- this must be true so that we trigger a
+	// metadata refresh (i.e. when a broker dies)
+	conn3, err := cp.GetConnectionByAddr(srv.Address())
+	c.Assert(err, NotNil)
+	_, ok = err.(*NoConnectionsAvailable)
+	c.Assert(ok, Equals, false) // it's not NoConnectionsAvailable
+	c.Assert(conn3, IsNil)
 }
 
 func (s *ConnectionPoolSuite) TestTrimDeadAddrs(c *C) {

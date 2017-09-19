@@ -49,23 +49,38 @@ func (b *backend) GetIdleConnection() *connection {
 // none are available then wait for up to the IdleConnectionWait time for one, else finally
 // establish a new connection if we aren't at the limit. If we are, then continue waiting
 // in increments of the idle time for a connection or the limit to come down before making
-// a new connection. This could potentially block up to the DialTimeout.
+// a new connection. This could potentially block up to twice the DialTimeout.
 //
 // If the error returned is NoConnectionsAvailable, the caller should treat it as transient
 // and not consider the backend/addr unhealthy.
 func (b *backend) GetConnection() (*connection, error) {
-	dialTimeout := time.After(b.conf.DialTimeout)
+	// dialTimeout must be longer than the configured timeout from the user to
+	// differentiate the case where 'the pool is full' and 'the remote server is
+	// not responding'. Since the b.conf.DialTimeout is used by the underlying
+	// newTCPConnection method, we need to still be alive and waiting if it returns
+	// an error at that point -- hence waiting for twice the configured timeout
+	// in this method.
+	dialTimeout := time.After(2 * b.conf.DialTimeout)
 	for {
 		select {
+		// Track the overall GetConnection timeout. This will fire when we've waited
+		// for too long and should return. But, if we hit this case, we can reasonably
+		// believe we're actually at the connection limit b/c if it was an unhealthy
+		// backend then getNewConnection would have returned an error.
 		case <-dialTimeout:
 			return nil, &NoConnectionsAvailable{}
 
+		// Optimal case: a connection is immediately available in the the channel
+		// where we keep idle connections.
 		case conn := <-b.channel:
 			if !conn.IsClosed() {
 				return conn, nil
 			}
 			b.removeConnection(conn)
 
+		// Wait a small amount of time for an idle connection. If nothing arrives,
+		// attempt to make a new connection. This might fail if we're at the connection
+		// limit, in which case we'll loop.
 		case <-time.After(time.Duration(rndIntn(int(b.conf.IdleConnectionWait)))):
 			conn, err := b.getNewConnection()
 			if err != nil || conn != nil {

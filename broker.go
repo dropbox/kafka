@@ -851,6 +851,7 @@ func (c *consumer) Consume() (*proto.Message, error) {
 	}
 
 	msg := c.msgbuf[0]
+	c.msgbuf[0] = nil
 	c.msgbuf = c.msgbuf[1:]
 	c.offset = msg.Offset + 1
 	return msg, nil

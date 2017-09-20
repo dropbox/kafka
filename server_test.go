@@ -100,12 +100,13 @@ func (srv *Server) Start() {
 
 func (srv *Server) Close() {
 	srv.mu.Lock()
+	defer srv.mu.Unlock()
+
 	_ = srv.ln.Close()
 	for _, cli := range srv.clients {
 		_ = cli.Close()
 	}
 	srv.clients = make(map[int64]net.Conn)
-	srv.mu.Unlock()
 }
 
 func (srv *Server) handleClient(c net.Conn) {

@@ -348,6 +348,7 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 		// Now attempt to get a connection to this node
 		if addr := b.metadata.GetNodeAddress(nodeID); addr == "" {
 			// Forget the endpoint so we'll refresh metadata next try
+			resErr = errors.New("Unknown broker id.")
 			log.Warningf("[leaderConnection %s:%d] unknown broker ID: %d",
 				topic, partition, nodeID)
 			b.metadata.ForgetEndpoint(topic, partition)
@@ -367,6 +368,9 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 				return conn, nil
 			}
 		}
+	}
+	if resErr == nil {
+		resErr = errors.New("Programmer error in leaderConnection: err can't be nil.")
 	}
 	return nil, resErr
 }

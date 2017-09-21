@@ -314,6 +314,15 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 	return 0, proto.ErrUnknownTopicOrPartition
 }
 
+// leaderConnection returns connection to leader for given partition. If
+// connection does not exist, broker will try to connect.
+//
+// Failed connection retry is controlled by broker configuration.
+//
+// If broker is configured to allow topic creation, then if we don't find
+// the leader we will return a random broker. The broker will error if we end
+// up producing to it incorrectly (i.e., our metadata happened to be out of
+// date).
 func (b *Broker) leaderConnection(topic string, partition int32) (*connection, error) {
 	retry := &backoff.Backoff{Min: b.conf.LeaderRetryWait, Jitter: true}
 	var resErr error

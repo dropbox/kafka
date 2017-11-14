@@ -27,11 +27,10 @@ func TestProducerBrokenConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot get kafka address: %s", err)
 	}
-	broker, err := kafka.Dial(addrs, bconf)
+	broker, err := kafka.NewBroker("test-cluster-producer-broken-connection", addrs, bconf)
 	if err != nil {
 		t.Fatalf("cannot connect to cluster (%q): %s", addrs, err)
 	}
-	defer broker.Close()
 
 	// produce big message to enforce TCP buffer flush
 	m := proto.Message{
@@ -126,11 +125,10 @@ func TestConsumerBrokenConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot get kafka address: %s", err)
 	}
-	broker, err := kafka.Dial(addrs, bconf)
+	broker, err := kafka.NewBroker("test-cluster-consumer-broken-connection", addrs, bconf)
 	if err != nil {
 		t.Fatalf("cannot connect to cluster (%q): %s", addrs, err)
 	}
-	defer broker.Close()
 
 	// produce big message to enforce TCP buffer flush
 	m := proto.Message{

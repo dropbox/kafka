@@ -15,7 +15,7 @@ func (NoConnectionsAvailable) Error() string {
 // backend stores information about a given backend. All access to this data should be done
 // through methods to ensure accurate counting and limiting.
 type backend struct {
-	conf    BrokerConf
+	conf    ClusterConnectionConf
 	addr    string
 	channel chan *connection
 
@@ -183,7 +183,7 @@ func (b *backend) Idle(conn *connection) {
 		// the ConnectionLimit allows.
 		log.Warningf("connection pool with excess connections, closing: %s", b.addr)
 		b.removeConnection(conn)
-		conn.Close()
+		_ = conn.Close()
 	}
 }
 
@@ -201,21 +201,86 @@ func (b *backend) Close() {
 	defer b.mu.Unlock()
 
 	for _, conn := range b.conns {
-		conn.Close()
+		_ = conn.Close()
 	}
 	b.counter = 0
 }
 
+type ClusterConnectionConf struct {
+	// ConnectionLimit sets a limit on how many outstanding connections may exist to a
+	// single broker. This limit is for all connections except Metadata fetches which are exempted
+	// but separately limited to one per cluster. That is, the maximum number of connections per
+	// broker is ConnectionLimit + 1 but the maximum number of connections per cluster is
+	// NumBrokers * ConnectionLimit + 1 not NumBrokers * (ConnectionLimit + 1).
+	// Setting this too low can limit your throughput, but setting it too high can cause problems
+	// for your cluster.
+	//
+	// Defaults to 10.
+	ConnectionLimit int
+
+	// IdleConnectionWait sets a timeout on how long we should wait for a connection to
+	// become idle before we establish a new one. This value sets a cap on how much latency
+	// you're willing to add to a request before establishing a new connection.
+	//
+	// Default is 200ms.
+	IdleConnectionWait time.Duration
+
+	// Any new connection dial timeout. This must be at least double the
+	// IdleConnectionWait.
+	//
+	// Default is 10 seconds.
+	DialTimeout time.Duration
+
+	// DialRetryLimit limits the number of connection attempts to every node in
+	// cluster before failing. Use DialRetryWait to control the wait time
+	// between retries.
+	//
+	// Defaults to 10.
+	DialRetryLimit int
+
+	// DialRetryWait sets a limit to the waiting time when trying to establish
+	// broker connection to single node to fetch cluster metadata. This is subject to
+	// exponential backoff, so the second and further retries will be more than this
+	// value.
+	//
+	// Defaults to 500ms.
+	DialRetryWait time.Duration
+
+	// MetadataRefreshTimeout is the maximum time to wait for a metadata refresh. This
+	// is compounding with many of the retries -- various failures trigger a metadata
+	// refresh. This should be set fairly high, as large metadata objects or loaded
+	// clusters can take a little while to return data.
+	//
+	// Defaults to 30s.
+	MetadataRefreshTimeout time.Duration
+
+	// MetadataRefreshFrequency is how often we should refresh metadata regardless of whether we
+	// have encountered errors.
+	//
+	// Defaults to 0 which means disabled.
+	MetadataRefreshFrequency time.Duration
+}
+
+func NewClusterConnectionConf() ClusterConnectionConf {
+	return ClusterConnectionConf{
+		ConnectionLimit:          10,
+		IdleConnectionWait:       200 * time.Millisecond,
+		DialTimeout:              10 * time.Second,
+		DialRetryLimit:           10,
+		DialRetryWait:            500 * time.Millisecond,
+		MetadataRefreshTimeout:   30 * time.Second,
+		MetadataRefreshFrequency: 0,
+	}
+}
+
 // connectionPool is a way for us to manage multiple connections to a Kafka broker in a way
 // that balances out throughput with overall number of connections.
-type connectionPool struct {
-	conf BrokerConf
+type ConnectionPool struct {
+	conf ClusterConnectionConf
 
 	// mu protects the below members of this struct. This mutex must only be used by
 	// connectionPool.
-	mu         *sync.RWMutex
-	closed     bool
-	closedChan chan struct{}
+	mu *sync.RWMutex
 	// The keys of this map is the set of valid connection destinations, as specified by
 	// InitializeAddrs. Adding an addr to this map does not initiate a connection.
 	// If an addr is removed, any active backend pointing to it will be closed and no further
@@ -224,17 +289,20 @@ type connectionPool struct {
 }
 
 // newConnectionPool creates a connection pool and initializes it.
-func newConnectionPool(conf BrokerConf) connectionPool {
-	return connectionPool{
-		conf:       conf,
-		mu:         &sync.RWMutex{},
-		closedChan: make(chan struct{}),
-		backends:   make(map[string]*backend),
+func NewConnectionPool(conf ClusterConnectionConf, nodes []string) *ConnectionPool {
+	connPool := ConnectionPool{
+		conf:     conf,
+		mu:       &sync.RWMutex{},
+		backends: make(map[string]*backend),
 	}
+
+	connPool.InitializeAddrs(nodes)
+
+	return &connPool
 }
 
 // newBackend creates a new backend structure.
-func (cp *connectionPool) newBackend(addr string) *backend {
+func (cp *ConnectionPool) newBackend(addr string) *backend {
 	return &backend{
 		mu:      &sync.Mutex{},
 		conf:    cp.conf,
@@ -244,19 +312,16 @@ func (cp *connectionPool) newBackend(addr string) *backend {
 }
 
 // getBackend fetches a backend for a given address or nil if none exists.
-func (cp *connectionPool) getBackend(addr string) *backend {
+func (cp *ConnectionPool) getBackend(addr string) *backend {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 
-	if cp.closed {
-		return nil
-	}
 	return cp.backends[addr]
 }
 
 // GetAllAddrs returns a slice of all addresses we've seen. Can be used for picking a random
 // address or iterating the known brokers.
-func (cp *connectionPool) GetAllAddrs() []string {
+func (cp *ConnectionPool) GetAllAddrs() []string {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 
@@ -272,14 +337,9 @@ func (cp *connectionPool) GetAllAddrs() []string {
 // InitializeAddrs takes in a set of addresses and just sets up the structures for them. This
 // doesn't start any connecting. This is done so that we have a set of addresses for other
 // parts of the system to use.
-func (cp *connectionPool) InitializeAddrs(addrs []string) {
+func (cp *ConnectionPool) InitializeAddrs(addrs []string) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
-
-	if cp.closed {
-		log.Warning("Cannot InitializeAddrs on closed connectionPool.")
-		return
-	}
 
 	deletedAddrs := make(map[string]struct{})
 	for addr := range cp.backends {
@@ -304,7 +364,7 @@ func (cp *connectionPool) InitializeAddrs(addrs []string) {
 
 // GetIdleConnection returns a random idle connection from the set of connections that we
 // happen to have open. If no connections are available or idle, this returns nil.
-func (cp *connectionPool) GetIdleConnection() *connection {
+func (cp *ConnectionPool) GetIdleConnection() *connection {
 	addrs := cp.GetAllAddrs()
 
 	for _, idx := range rndPerm(len(addrs)) {
@@ -322,52 +382,17 @@ func (cp *connectionPool) GetIdleConnection() *connection {
 // IdleConnectionWait then we'll establish a new one. This can block a long time.
 //
 // See comments on GetConnection for details on the error returned.
-func (cp *connectionPool) GetConnectionByAddr(addr string) (*connection, error) {
-	if cp.IsClosed() {
-		return nil, errors.New("connection pool is closed")
-	}
-
+func (cp *ConnectionPool) GetConnectionByAddr(addr string) (*connection, error) {
 	if be := cp.getBackend(addr); be != nil {
 		return be.GetConnection()
 	}
 	return nil, errors.New("no backend for addr")
 }
 
-// Close sets the connection pool's end state, no further connections will be returned
-// and any existing connections will be closed out.
-func (cp *connectionPool) Close() {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-
-	for _, backend := range cp.backends {
-		backend.Close()
-	}
-	cp.backends = nil
-	if !cp.closed {
-		close(cp.closedChan)
-	}
-	cp.closed = true
-}
-
-// ClosedChan returns a channel which remains open iff this connectionPool is open. Equivalent
-// to polling IsClosed.
-func (cp *connectionPool) ClosedChan() <-chan struct{} {
-	return cp.closedChan
-}
-
-// IsClosed returns whether or not this pool is closed. Equiavelent to checking if the
-// result of ClosedChan is closed.
-func (cp *connectionPool) IsClosed() bool {
-	cp.mu.RLock()
-	defer cp.mu.RUnlock()
-
-	return cp.closed
-}
-
 // Idle takes a now idle connection and makes it available for other users. This should be
 // called in a goroutine so as not to block the original caller, as this function may take
 // some time to return.
-func (cp *connectionPool) Idle(conn *connection) {
+func (cp *ConnectionPool) Idle(conn *connection) {
 	if conn == nil {
 		return
 	}
@@ -375,6 +400,6 @@ func (cp *connectionPool) Idle(conn *connection) {
 	if be := cp.getBackend(conn.addr); be != nil {
 		be.Idle(conn)
 	} else {
-		conn.Close()
+		_ = conn.Close()
 	}
 }

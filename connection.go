@@ -88,7 +88,7 @@ func (c *connection) sendRequest(req proto.Request, reqID int32) (*bytes.Reader,
 		}
 		return result.bytes, result.err
 	case <-time.After(2 * c.timeout):
-		c.Close()
+		_ = c.Close()
 		log.Warning("sendRequest hit timeout")
 		return nil, proto.ErrRequestTimeout
 	}
@@ -108,7 +108,7 @@ func (c *connection) sendRequestHelper(req proto.Request, reqID int32) (
 		return nil, err
 	} else {
 		if correlationID != reqID {
-			c.Close()
+			_ = c.Close()
 			return nil, fmt.Errorf("got unexpected correlation ID %d instead of %d",
 				correlationID, reqID)
 		}

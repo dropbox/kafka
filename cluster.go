@@ -181,7 +181,7 @@ func (cm *Cluster) RefreshMetadata() error {
 	select {
 	case err := <-updateChan:
 		return err
-	case <-time.After(cm.getTimeout()):
+	case <-time.After(cm.getTimeout() * len(cm.metadataConnPool.GetAllAddrs())):
 		return errors.New("timed out refreshing metadata")
 	}
 }

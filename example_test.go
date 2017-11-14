@@ -9,11 +9,10 @@ import (
 func ExampleConsumer() {
 	// connect to kafka cluster
 	addresses := []string{"localhost:9092", "localhost:9093"}
-	broker, err := Dial(addresses, NewBrokerConf("test"))
+	broker, err := NewBroker("example-test-cluster1", addresses, NewBrokerConf("test"))
 	if err != nil {
 		panic(err)
 	}
-	defer broker.Close()
 
 	// create new consumer
 	conf := NewConsumerConf("my-messages", 0)
@@ -40,11 +39,10 @@ func ExampleConsumer() {
 func ExampleOffsetCoordinator() {
 	// connect to kafka cluster
 	addresses := []string{"localhost:9092", "localhost:9093"}
-	broker, err := Dial(addresses, NewBrokerConf("test"))
+	broker, err := NewBroker("test-cluster2", addresses, NewBrokerConf("test"))
 	if err != nil {
 		panic(err)
 	}
-	defer broker.Close()
 
 	// create offset coordinator and customize configuration
 	conf := NewOffsetCoordinatorConf("my-consumer-group")
@@ -73,11 +71,10 @@ func ExampleOffsetCoordinator() {
 func ExampleProducer() {
 	// connect to kafka cluster
 	addresses := []string{"localhost:9092", "localhost:9093"}
-	broker, err := Dial(addresses, NewBrokerConf("test"))
+	broker, err := NewBroker("test-cluster3", addresses, NewBrokerConf("test"))
 	if err != nil {
 		panic(err)
 	}
-	defer broker.Close()
 
 	// create new producer
 	conf := NewProducerConf()

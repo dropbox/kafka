@@ -47,7 +47,6 @@ type Client interface {
 	OffsetCoordinator(conf OffsetCoordinatorConf) (OffsetCoordinator, error)
 	OffsetEarliest(topic string, partition int32) (offset int64, err error)
 	OffsetLatest(topic string, partition int32) (offset int64, err error)
-	Close()
 }
 
 // Consumer is the interface that wraps the Consume method.
@@ -119,151 +118,64 @@ type BrokerConf struct {
 	// Defaults to False.
 	AllowTopicCreation bool
 
-	// Any new connection dial timeout. This must be at least double the
-	// IdleConnectionWait.
-	//
-	// Default is 10 seconds.
-	DialTimeout time.Duration
-
-	// DialRetryLimit limits the number of connection attempts to every node in
-	// cluster before failing. Use DialRetryWait to control the wait time
-	// between retries.
-	//
-	// Defaults to 10.
-	DialRetryLimit int
-
-	// DialRetryWait sets a limit to the waiting time when trying to establish
-	// broker connection to single node to fetch cluster metadata. This is subject to
-	// exponential backoff, so the second and further retries will be more than this
-	// value.
-	//
-	// Defaults to 500ms.
-	DialRetryWait time.Duration
-
-	// MetadataRefreshTimeout is the maximum time to wait for a metadata refresh. This
-	// is compounding with many of the retries -- various failures trigger a metadata
-	// refresh. This should be set fairly high, as large metadata objects or loaded
-	// clusters can take a little while to return data.
-	//
-	// Defaults to 30s.
-	MetadataRefreshTimeout time.Duration
-
-	// MetadataRefreshFrequency is how often we should refresh metadata regardless of whether we
-	// have encountered errors.
-	//
-	// Defaults to 0 which means disabled.
-	MetadataRefreshFrequency time.Duration
-
-	// ConnectionLimit sets a limit on how many outstanding connections may exist to a
-	// single broker. This limit is for all connections except Metadata fetches which are exempted
-	// but separately limited to one per cluster. That is, the maximum number of connections per
-	// broker is ConnectionLimit + 1 but the maximum number of connections per cluster is
-	// NumBrokers * ConnectionLimit + 1 not NumBrokers * (ConnectionLimit + 1).
-	// Setting this too low can limit your throughput, but setting it too high can cause problems
-	// for your cluster.
-	//
-	// Defaults to 10.
-	ConnectionLimit int
-
-	// IdleConnectionWait sets a timeout on how long we should wait for a connection to
-	// become idle before we establish a new one. This value sets a cap on how much latency
-	// you're willing to add to a request before establishing a new connection. This must
-	// be less than half the DialTimeout.
-	//
-	// Default is 200ms.
-	IdleConnectionWait time.Duration
+	// Configuration specific to the connections to the cluster.
+	ClusterConnectionConf ClusterConnectionConf
 }
 
 func NewBrokerConf(clientID string) BrokerConf {
 	return BrokerConf{
-		ClientID:                 clientID,
-		DialTimeout:              10 * time.Second,
-		DialRetryLimit:           10,
-		DialRetryWait:            500 * time.Millisecond,
-		AllowTopicCreation:       false,
-		LeaderRetryLimit:         10,
-		LeaderRetryWait:          500 * time.Millisecond,
-		MetadataRefreshTimeout:   30 * time.Second,
-		MetadataRefreshFrequency: 0,
-		ConnectionLimit:          10,
-		IdleConnectionWait:       200 * time.Millisecond,
+		ClientID:              clientID,
+		AllowTopicCreation:    false,
+		LeaderRetryLimit:      10,
+		LeaderRetryWait:       500 * time.Millisecond,
+		ClusterConnectionConf: NewClusterConnectionConf(),
 	}
 }
 
 type nodeMap map[int32]string
 
-// Broker is an abstract connection to kafka cluster, managing connections to
-// all kafka nodes.
+// Broker is an abstract connection to kafka cluster for the given configuration, and can be used to
+// create clients to the cluster.
 type Broker struct {
-	conf     BrokerConf
-	conns    connectionPool
-	metadata clusterMetadata
+	conf    BrokerConf
+	conns   *ConnectionPool
+	cluster *Cluster
 }
 
-// Dial connects to any node from a given list of kafka addresses and after
-// successful metadata fetch, returns broker.
+// NewBroker returns a broker to a given list of kafka addresses.
 //
-// The returned broker is not initially connected to any kafka node.
-func Dial(nodeAddresses []string, conf BrokerConf) (*Broker, error) {
-	broker := &Broker{
-		conf:  conf,
-		conns: newConnectionPool(conf),
-	}
-	broker.metadata = newClusterMetadata(conf, &broker.conns)
-
-	if len(nodeAddresses) == 0 {
-		return nil, errors.New("no addresses provided")
+// The returned broker is not necessarily initially connected to any kafka node.
+func NewBroker(clusterName string, nodeAddresses []string, conf BrokerConf) (*Broker, error) {
+	metadata, err := getMetadataCache().getOrCreateMetadata(clusterName, nodeAddresses, conf.ClusterConnectionConf)
+	if err != nil {
+		log.Warningf("Failed to get cluster Metadata %s from cache", nodeAddresses)
+		return nil, err
 	}
 
-	// Set up the pool
-	broker.conns.InitializeAddrs(nodeAddresses)
-
-	// Attempt to connect to the cluster but we want to do this with backoff and make sure we
-	// don't exceed the limits
-	retry := &backoff.Backoff{Min: conf.DialRetryWait, Jitter: true}
-	for try := 0; try < conf.DialRetryLimit; try++ {
-		if try > 0 {
-			sleepFor := retry.Duration()
-			log.Debugf("cannot fetch metadata from any connection (try %d, sleep %f)",
-				try, sleepFor)
-			time.Sleep(sleepFor)
-		}
-
-		resultChan := make(chan error, 1)
-		go func() {
-			resultChan <- broker.metadata.Refresh()
-		}()
-
-		select {
-		case err := <-resultChan:
-			if err == nil {
-				// Metadata has been refreshed, so this broker is ready to go
-				return broker, nil
-			}
-			log.Errorf("cannot fetch metadata: %s", err)
-		case <-time.After(conf.DialTimeout):
-			log.Error("timeout fetching metadata")
-		}
+	metadataConnPool, err := metadata.connectionPoolForClient(conf.ClientID, conf.ClusterConnectionConf)
+	if err != nil {
+		log.Warningf("Failed to get ConnectionPool for metadata from cache")
+		return nil, err
 	}
-	return nil, errors.New("cannot connect (exhausted retries)")
-}
 
-// Close closes the broker and all active kafka nodes connections.
-func (b *Broker) Close() {
-	b.conns.Close()
+	return &Broker{
+		conf,
+		metadataConnPool,
+		metadata,
+	}, nil
 }
 
 // Metadata returns a copy of the metadata. This does not require a lock as it's fetching
 // a new copy from Kafka, we never use our internal state.
 func (b *Broker) Metadata() (*proto.MetadataResp, error) {
-	resp, err := b.metadata.Fetch()
+	resp, err := b.cluster.Fetch(b.conf.ClientID)
 	return resp, err
 }
 
 // PartitionCount returns the count of partitions in a topic, or 0 and an error if the topic
 // does not exist.
 func (b *Broker) PartitionCount(topic string) (int32, error) {
-	return b.metadata.PartitionCount(topic)
+	return b.cluster.PartitionCount(topic)
 }
 
 // getLeaderEndpoint returns the ID of the node responsible for a topic/partition.
@@ -272,19 +184,19 @@ func (b *Broker) PartitionCount(topic string) (int32, error) {
 func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error) {
 	// Attempt to learn where this topic/partition is. This may return an error in which
 	// case we don't know about it and should refresh metadata.
-	if nodeID, err := b.metadata.GetEndpoint(topic, partition); err == nil {
+	if nodeID, err := b.cluster.GetEndpoint(topic, partition); err == nil {
 		return nodeID, nil
 	}
 
 	// Endpoint is unknown, refresh metadata (synchronous, blocks a while)
-	if err := b.metadata.Refresh(); err != nil {
+	if err := b.cluster.RefreshMetadata(); err != nil {
 		log.Warningf("[getLeaderEndpoint %s:%d] cannot refresh metadata: %s",
 			topic, partition, err)
 		return 0, err
 	}
 
 	// Successfully refreshed metadata, try to get endpoint again
-	if nodeID, err := b.metadata.GetEndpoint(topic, partition); err == nil {
+	if nodeID, err := b.cluster.GetEndpoint(topic, partition); err == nil {
 		return nodeID, nil
 	}
 
@@ -297,14 +209,14 @@ func (b *Broker) getLeaderEndpoint(topic string, partition int32) (int32, error)
 
 	// Try to create the topic by requesting the metadata for that one specific topic
 	// (this is the hack Kafka uses to allow topics to be created on demand)
-	if _, err := b.metadata.Fetch(topic); err != nil {
+	if _, err := b.cluster.Fetch(b.conf.ClientID, topic); err != nil {
 		log.Warningf("[getLeaderEndpoint %s:%d] failed to get metadata for topic: %s",
 			topic, partition, err)
 		return 0, err
 	}
 
 	// Successfully refreshed metadata, try to get endpoint again
-	if nodeID, err := b.metadata.GetEndpoint(topic, partition); err == nil {
+	if nodeID, err := b.cluster.GetEndpoint(topic, partition); err == nil {
 		return nodeID, nil
 	}
 
@@ -334,10 +246,6 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 			time.Sleep(sleepFor)
 		}
 
-		if b.IsClosed() {
-			return nil, errors.New("Broker was closed, giving up on leaderConnection.")
-		}
-
 		// Figure out which broker (node/endpoint) is presently leader for this t/p
 		nodeID, err := b.getLeaderEndpoint(topic, partition)
 		if err != nil {
@@ -346,12 +254,12 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 		}
 
 		// Now attempt to get a connection to this node
-		if addr := b.metadata.GetNodeAddress(nodeID); addr == "" {
+		if addr := b.cluster.GetNodeAddress(nodeID); addr == "" {
 			// Forget the endpoint so we'll refresh metadata next try
 			resErr = errors.New("Unknown broker id.")
 			log.Warningf("[leaderConnection %s:%d] unknown broker ID: %d",
 				topic, partition, nodeID)
-			b.metadata.ForgetEndpoint(topic, partition)
+			b.cluster.ForgetEndpoint(topic, partition)
 		} else {
 			if conn, err := b.conns.GetConnectionByAddr(addr); err != nil {
 				resErr = err
@@ -361,7 +269,7 @@ func (b *Broker) leaderConnection(topic string, partition int32) (*connection, e
 					// Forget the endpoint. It's possible this broker has failed and we want to wait
 					// for Kafka to elect a new leader. To trick our algorithm into working we have to
 					// forget this endpoint so it will refresh metadata.
-					b.metadata.ForgetEndpoint(topic, partition)
+					b.cluster.ForgetEndpoint(topic, partition)
 				}
 			} else {
 				// Successful (supposedly) connection
@@ -483,7 +391,7 @@ offsetRetryLoop:
 			if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
 				log.Debugf("connection died while sending message to %s:%d: %s",
 					topic, partition, err)
-				conn.Close()
+				_ = conn.Close()
 				resErr = err
 				continue
 			}
@@ -505,7 +413,7 @@ offsetRetryLoop:
 					// Failover happened, so we probably need to talk to a different broker. Let's
 					// kick off a metadata refresh.
 					log.Warningf("cannot fetch offset: %s", p.Err)
-					if err := b.metadata.Refresh(); err != nil {
+					if err := b.cluster.RefreshMetadata(); err != nil {
 						log.Warningf("cannot refresh metadata: %s", err)
 					}
 					continue offsetRetryLoop
@@ -612,7 +520,9 @@ func (p *producer) Produce(
 		if _, ok := err.(*NoConnectionsAvailable); !ok {
 			// Try to refresh metadata in the background, in case the produce failed due to stale
 			// leadership information.
-			go p.broker.metadata.Refresh()
+			go func() {
+				_ = p.broker.cluster.RefreshMetadata()
+			}()
 		}
 	}
 	return offset, err
@@ -654,7 +564,7 @@ func (p *producer) produce(
 			// chance to react.
 			log.Debugf("connection died while sending message to %s:%d: %s",
 				topic, partition, err)
-			conn.Close()
+			_ = conn.Close()
 		}
 		return 0, err
 	}
@@ -809,10 +719,6 @@ func (b *Broker) consumer(conf ConsumerConf) (*consumer, error) {
 	return c, nil
 }
 
-func (b *Broker) IsClosed() bool {
-	return b.conns.IsClosed()
-}
-
 // consume is returning a batch of messages from consumed partition.
 // Consumer can retry fetching messages even if responses return no new
 // data. Retry behaviour can be configured through RetryLimit and RetryWait
@@ -934,13 +840,13 @@ consumeRetryLoop:
 		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
 			log.Debugf("connection died while fetching messages from %s:%d: %s",
 				c.conf.Topic, c.conf.Partition, err)
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
 
 		if err != nil {
 			log.Debugf("cannot fetch messages (try %d): %s", retry, err)
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
 
@@ -959,7 +865,7 @@ consumeRetryLoop:
 					// Failover happened, so we probably need to talk to a different broker. Let's
 					// kick off a metadata refresh.
 					log.Warningf("cannot fetch messages (try %d): %s", retry, p.Err)
-					if err := c.broker.metadata.Refresh(); err != nil {
+					if err := c.broker.cluster.RefreshMetadata(); err != nil {
 						log.Warningf("cannot refresh metadata: %s", err)
 					}
 					continue consumeRetryLoop
@@ -1075,7 +981,7 @@ func (c *offsetCoordinator) commit(
 		if _, ok := err.(*net.OpError); ok || err == io.EOF || err == syscall.EPIPE {
 			log.Debugf("connection died while committing on %s:%d for %s: %s",
 				topic, partition, c.conf.ConsumerGroup, err)
-			conn.Close()
+			_ = conn.Close()
 
 		} else if err == nil {
 			// Should be a single response in the payload.
@@ -1135,7 +1041,7 @@ func (c *offsetCoordinator) Offset(
 		case io.EOF, syscall.EPIPE:
 			log.Debugf("connection died while fetching offsets on %s:%d for %s: %s",
 				topic, partition, c.conf.ConsumerGroup, err)
-			conn.Close()
+			_ = conn.Close()
 
 		case nil:
 			for _, t := range resp.Topics {

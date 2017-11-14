@@ -27,7 +27,7 @@ func (s *BrokerSuite) SetUpTest(c *C) {
 // tests
 func (s *BrokerSuite) newTestBrokerConf(clientID string) BrokerConf {
 	conf := NewBrokerConf(clientID)
-	conf.DialTimeout = 400 * time.Millisecond
+	conf.ClusterConnectionConf.DialTimeout = 400 * time.Millisecond
 	conf.LeaderRetryLimit = 10
 	conf.LeaderRetryWait = 2 * time.Millisecond
 	return conf
@@ -128,7 +128,7 @@ func waitForMetadataEpoch(c *C, Prod Producer, epoch int) {
 	var prod *producer = Prod.(*producer)
 	timeout := time.After(time.Minute)
 	for {
-		e := atomic.LoadInt64(prod.broker.metadata.epoch)
+		e := atomic.LoadInt64(prod.broker.cluster.epoch)
 		switch {
 		case e == int64(epoch):
 			log.Debugf("Metadata epoch reached %d", e)
@@ -151,9 +151,8 @@ func (s *BrokerSuite) TestDialWithInvalidAddress(c *C) {
 	defer srv.Close()
 
 	addresses := []string{"localhost:4291190", "localhost:2141202", srv.Address()}
-	broker, err := Dial(addresses, s.newTestBrokerConf("tester"))
+	_, err := NewBroker("test-cluster-invalid", addresses, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestDialWithNoAddress(c *C) {
@@ -161,8 +160,59 @@ func (s *BrokerSuite) TestDialWithNoAddress(c *C) {
 	srv.Start()
 	defer srv.Close()
 
-	_, err := Dial(nil, s.newTestBrokerConf("tester"))
+	_, err := NewBroker("test-cluster-nil-address", nil, s.newTestBrokerConf("tester"))
 	c.Assert(err, NotNil)
+}
+
+// Ensure that our dial function for the same cluster + client ID results in only one metadata
+// request to a server.
+func (s *BrokerSuite) TestDialMetadataRequestCached(c *C) {
+	InitializeMetadataCache()
+	defer uninitializeMetadataCache()
+
+	srv1 := NewServer()
+	srv1.Start()
+	defer srv1.Close()
+
+	srv2 := NewServer()
+	srv2.Start()
+	defer srv2.Close()
+
+	srv3 := NewServer()
+	srv3.Start()
+	defer srv3.Close()
+
+	for i := 0; i < 30; i++ {
+		_, err := NewBroker(
+			"test-cluster-metadata-cache",
+			[]string{srv1.Address(), srv2.Address(), srv3.Address()},
+			s.newTestBrokerConf("tester"))
+		c.Assert(err, IsNil)
+	}
+
+	c.Assert(srv1.Processed+srv2.Processed+srv3.Processed, Equals, 1)
+}
+
+func (s *BrokerSuite) TestDialConnectionPoolCached(c *C) {
+	InitializeMetadataCache()
+	defer uninitializeMetadataCache()
+
+	srv1 := NewServer()
+	srv1.Start()
+	defer srv1.Close()
+
+	// Same nodes & clientID should share a connection pool.
+	brokerSame1, err := NewBroker("test-cluster1",
+		[]string{srv1.Address()}, s.newTestBrokerConf("tester1"))
+	c.Assert(err, IsNil)
+	brokerSame2, err := NewBroker("test-cluster1", []string{srv1.Address()}, s.newTestBrokerConf("tester1"))
+	c.Assert(err, IsNil)
+	c.Assert(brokerSame1.conns, Equals, brokerSame2.conns)
+
+	// Different nodes & clientID should not share a connection pool.
+	brokerDifferent1, err := NewBroker("test-cluster2", []string{srv1.Address()}, s.newTestBrokerConf("tester2"))
+	brokerDifferent2, err := NewBroker("test-cluster3", []string{srv1.Address()}, s.newTestBrokerConf("tester3"))
+	c.Assert(brokerDifferent1, Not(Equals), brokerDifferent2)
 }
 
 // Tests to ensure that our dial function is randomly selecting brokers from the
@@ -180,13 +230,17 @@ func (s *BrokerSuite) TestDialRandomized(c *C) {
 	srv3.Start()
 	defer srv3.Close()
 
+	nodes := []string{srv1.Address(), srv2.Address(), srv3.Address()}
+	conf := s.newTestBrokerConf("tester")
+
 	for i := 0; i < 30; i++ {
-		_, err := Dial([]string{srv1.Address(), srv2.Address(), srv3.Address()},
-			s.newTestBrokerConf("tester"))
+		_, err := NewCluster(nodes, conf.ClusterConnectionConf)
 		c.Assert(err, IsNil)
 	}
 
 	c.Assert(srv1.Processed, Not(Equals), 30)
+	c.Assert(srv2.Processed, Not(Equals), 30)
+	c.Assert(srv3.Processed, Not(Equals), 30)
 	c.Assert(srv1.Processed+srv2.Processed+srv3.Processed, Equals, 30)
 	c.Assert(srv1.Processed, Not(Equals), 0)
 	c.Assert(srv2.Processed, Not(Equals), 0)
@@ -200,9 +254,9 @@ func (s *BrokerSuite) TestProducer(c *C) {
 
 	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-producer", []string{srv.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
-	defer broker.Close()
 
 	prodConf := NewProducerConf()
 	prodConf.RetryWait = time.Millisecond
@@ -268,7 +322,8 @@ func (s *BrokerSuite) TestProducerWithNoAck(c *C) {
 
 	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-no-ack", []string{srv.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
@@ -319,7 +374,6 @@ func (s *BrokerSuite) TestProducerWithNoAck(c *C) {
 	c.Assert(offset, Equals, int64(0))
 	c.Assert(createdMsgs, Equals, 2)
 
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestMetadataRefreshSerialization(c *C) {
@@ -331,26 +385,28 @@ func (s *BrokerSuite) TestMetadataRefreshSerialization(c *C) {
 	mdh.SetRequestDelay(100 * time.Millisecond)
 	srv.Handle(MetadataRequest, mdh.Handler())
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-metadata-refresh",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
-	defer broker.Close()
 
-	c.Assert(atomic.LoadInt64(broker.metadata.epoch), Equals, int64(1))
-	c.Assert(broker.metadata.Refresh(), IsNil)
-	c.Assert(atomic.LoadInt64(broker.metadata.epoch), Equals, int64(2))
+	c.Assert(atomic.LoadInt64(broker.cluster.epoch), Equals, int64(1))
+	c.Assert(broker.cluster.RefreshMetadata(), IsNil)
+	c.Assert(atomic.LoadInt64(broker.cluster.epoch), Equals, int64(2))
 
 	// Now try two at once, assert only one increment
-	go broker.metadata.Refresh()
-	c.Assert(broker.metadata.Refresh(), IsNil)
-	c.Assert(atomic.LoadInt64(broker.metadata.epoch), Equals, int64(3))
+	go broker.cluster.RefreshMetadata()
+	c.Assert(broker.cluster.RefreshMetadata(), IsNil)
+	c.Assert(atomic.LoadInt64(broker.cluster.epoch), Equals, int64(3))
 
 	// Now test that the timeout works
 	func() {
-		broker.metadata.mu.Lock()
-		defer broker.metadata.mu.Unlock()
-		broker.metadata.timeout = 1 * time.Millisecond
+		broker.cluster.mu.Lock()
+		defer broker.cluster.mu.Unlock()
+		broker.cluster.timeout = 1 * time.Millisecond
 	}()
-	c.Assert(broker.metadata.Refresh(), NotNil)
+	c.Assert(broker.cluster.RefreshMetadata(), NotNil)
 }
 
 func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
@@ -455,9 +511,11 @@ func (s *BrokerSuite) TestProduceWhileLeaderChange(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv1.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-leader-change",
+		[]string{srv1.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
-	defer broker.Close()
 
 	prod := broker.Producer(NewProducerConf())
 	for try := 0; try < numTriesRequired; try++ {
@@ -548,7 +606,8 @@ func (s *BrokerSuite) TestConsumer(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-consumer", []string{srv.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	_, err = broker.Consumer(NewConsumerConf("does-not-exists", 413))
@@ -575,7 +634,6 @@ func (s *BrokerSuite) TestConsumer(c *C) {
 	if string(msg2.Value) != "second" || string(msg2.Key) != "2" || msg2.Offset != 4 {
 		c.Fatalf("expected different message than %#v", msg2)
 	}
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestBatchConsumer(c *C) {
@@ -651,7 +709,10 @@ func (s *BrokerSuite) TestBatchConsumer(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-batch-consumer",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	_, err = broker.BatchConsumer(NewConsumerConf("does-not-exists", 413))
@@ -682,8 +743,6 @@ func (s *BrokerSuite) TestBatchConsumer(c *C) {
 	if string(batch[2].Value) != "third" || string(batch[2].Key) != "3" || batch[2].Offset != 5 {
 		c.Fatalf("expected different message than %#v", batch[2])
 	}
-
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestConsumerRetry(c *C) {
@@ -735,7 +794,8 @@ func (s *BrokerSuite) TestConsumerRetry(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test"))
+	broker, err := NewBroker(
+		"test-cluster-retry", []string{srv.Address()}, s.newTestBrokerConf("test"))
 	c.Assert(err, IsNil)
 
 	consConf := NewConsumerConf("test", 0)
@@ -748,7 +808,6 @@ func (s *BrokerSuite) TestConsumerRetry(c *C) {
 	_, err = consumer.Consume()
 	c.Assert(err, Equals, ErrNoData)
 	c.Assert(fetchCallCount, Equals, 6)
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestConsumeInvalidOffset(c *C) {
@@ -783,7 +842,10 @@ func (s *BrokerSuite) TestConsumeInvalidOffset(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-invalid-offset",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	consConf := NewConsumerConf("test", 0)
@@ -796,7 +858,6 @@ func (s *BrokerSuite) TestConsumeInvalidOffset(c *C) {
 	if string(msg.Value) != "second" || string(msg.Key) != "2" || msg.Offset != 4 {
 		c.Fatalf("expected different message than %#v", msg)
 	}
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestPartitionOffset(c *C) {
@@ -841,7 +902,10 @@ func (s *BrokerSuite) TestPartitionOffset(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-partition-offset",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	c.Assert(md.NumGeneralFetches(), Equals, 1)
@@ -859,14 +923,17 @@ func (s *BrokerSuite) TestPartitionCount(c *C) {
 
 	srv.Handle(MetadataRequest, NewMetadataHandler(srv, false).Handler())
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-partition-count",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
-	count, err := broker.metadata.PartitionCount("test")
+	count, err := broker.cluster.PartitionCount("test")
 	c.Assert(err, IsNil)
 	c.Assert(count, Equals, int32(2))
 
-	count, err = broker.metadata.PartitionCount("test2")
+	count, err = broker.cluster.PartitionCount("test2")
 	c.Assert(err, NotNil)
 	c.Assert(count, Equals, int32(0))
 }
@@ -988,7 +1055,8 @@ func (s *BrokerSuite) TestPartitionOffsetClosedConnection(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv1.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-closed-conn", []string{srv1.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	offset, err := broker.offset("test", 1, -2)
@@ -1227,9 +1295,11 @@ func (s *BrokerSuite) TestConsumeWhilePartitionMoves(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv1.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-partition-moves",
+		[]string{srv1.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
-	defer broker.Close()
 
 	conf := NewConsumerConf("test", 1)
 	conf.StartOffset = 0
@@ -1347,7 +1417,8 @@ func (s *BrokerSuite) TestConsumerSeekToLatest(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-seektolatest-broker", []string{srv.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	consConf := NewConsumerConf("test", 413)
@@ -1371,7 +1442,6 @@ func (s *BrokerSuite) TestConsumerSeekToLatest(c *C) {
 	if string(msg2.Value) != "third" || string(msg2.Key) != "3" || msg2.Offset != 5 {
 		c.Fatalf("expected different message than %#v", msg2)
 	}
-	broker.Close()
 }
 
 func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
@@ -1485,12 +1555,12 @@ func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
 	srv2.Handle(MetadataRequest, handler)
 
 	conf := s.newTestBrokerConf("tester")
-	conf.DialTimeout = time.Millisecond * 50
+	conf.ClusterConnectionConf.DialTimeout = time.Millisecond * 50
 	conf.LeaderRetryWait = time.Millisecond
 	conf.LeaderRetryLimit = 3
 
 	// Force connection to first broker to start with
-	broker, err := Dial([]string{srv1.Address()}, conf)
+	broker, err := NewBroker("test-cluster-leader-failover", []string{srv1.Address()}, conf)
 	c.Assert(broker, NotNil)
 	c.Assert(err, IsNil)
 
@@ -1502,7 +1572,7 @@ func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
 	c.Assert(err, IsNil)
 
 	tp := topicPartition{"test", 0}
-	nodeID, ok := broker.metadata.endpoints[tp]
+	nodeID, ok := broker.cluster.endpoints[tp]
 	c.Assert(ok, Equals, true)
 	c.Assert(nodeID, Equals, int32(1))
 
@@ -1515,7 +1585,7 @@ func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
 	c.Assert(err, NotNil)
 
 	// provide node address that will be available after short period
-	broker.metadata.nodes = map[int32]string{
+	broker.cluster.nodes = map[int32]string{
 		2: srv2.Address(),
 	}
 
@@ -1526,7 +1596,7 @@ func (s *BrokerSuite) TestLeaderConnectionFailover(c *C) {
 	_, err = broker.leaderConnection("test", 0)
 	c.Assert(err, IsNil)
 
-	nodeID, ok = broker.metadata.endpoints[tp]
+	nodeID, ok = broker.cluster.endpoints[tp]
 	c.Assert(ok, Equals, true)
 	c.Assert(nodeID, Equals, int32(2))
 }
@@ -1558,7 +1628,10 @@ func (s *BrokerSuite) TestProducerFailoverRequestTimeout(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test"))
+	broker, err := NewBroker(
+		"test-cluster-produce-timeout",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("test"))
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
@@ -1623,7 +1696,10 @@ func (s *BrokerSuite) TestProducerFailoverLeaderNotAvailable(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test"))
+	broker, err := NewBroker(
+		"test-cluster-leader-unavailable",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("test"))
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
@@ -1685,7 +1761,7 @@ func (s *BrokerSuite) TestProducerNoCreateTopic(c *C) {
 	brokerConf := s.newTestBrokerConf("test")
 	brokerConf.AllowTopicCreation = false
 
-	broker, err := Dial([]string{srv.Address()}, brokerConf)
+	broker, err := NewBroker("test-cluster-no-create-topic", []string{srv.Address()}, brokerConf)
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
@@ -1738,7 +1814,7 @@ func (s *BrokerSuite) TestProducerTryCreateTopic(c *C) {
 	brokerConf := s.newTestBrokerConf("test")
 	brokerConf.AllowTopicCreation = true
 
-	broker, err := Dial([]string{srv.Address()}, brokerConf)
+	broker, err := NewBroker("test-cluster-try-create-topic", []string{srv.Address()}, brokerConf)
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
@@ -1879,9 +1955,11 @@ func (s *BrokerSuite) TestConsumeWhileLeaderChange(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv1.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker(
+		"test-cluster-consume-leader-change",
+		[]string{srv1.Address()},
+		s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
-	defer broker.Close()
 
 	conf := NewConsumerConf("test", 1)
 	conf.StartOffset = 0
@@ -1956,7 +2034,10 @@ func (s *BrokerSuite) TestConsumerFailover(c *C) {
 		return resp
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test"))
+	broker, err := NewBroker(
+		"test-cluster-consumer-failover",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("test"))
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 1)
@@ -1977,7 +2058,7 @@ func (s *BrokerSuite) TestConsumerFailover(c *C) {
 		c.Assert(err, IsNil)
 		c.Assert(string(msg.Value), Equals, "second")
 
-		if msg, err := consumer.Consume(); err != ErrNoData {
+		if msg, err = consumer.Consume(); err != ErrNoData {
 			c.Fatalf("expected no data, got %#v (%#q)", err, msg)
 		}
 
@@ -2092,7 +2173,10 @@ func (s *BrokerSuite) TestProducerBrokenPipe(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv1.Address()}, s.newTestBrokerConf("test-epipe"))
+	broker, err := NewBroker(
+		"test-cluster-broken-pipe",
+		[]string{srv1.Address()},
+		s.newTestBrokerConf("test-epipe"))
 	c.Assert(err, IsNil)
 
 	data := []byte(strings.Repeat(`
@@ -2155,7 +2239,10 @@ func (s *BrokerSuite) TestFetchOffset(c *C) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test-fetch-offset"))
+	broker, err := NewBroker(
+		"test-cluster-fetch-offset",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("test-fetch-offset"))
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
@@ -2280,7 +2367,7 @@ func (s *BrokerSuite) TestConsumerBrokenPipe(c *C) {
 	})
 
 	bconf := s.newTestBrokerConf("test-epipe")
-	broker, err := Dial([]string{srv1.Address()}, bconf)
+	broker, err := NewBroker("test-cluster-consumer-broken-pipe", []string{srv1.Address()}, bconf)
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
@@ -2362,7 +2449,7 @@ func (s *BrokerSuite) TestOffsetCoordinator(c *C) {
 	})
 
 	conf := s.newTestBrokerConf("tester")
-	broker, err := Dial([]string{srv.Address()}, conf)
+	broker, err := NewBroker("test-cluster-offset-coordinator", []string{srv.Address()}, conf)
 	c.Assert(err, IsNil)
 
 	coordConf := NewOffsetCoordinatorConf("test-group")
@@ -2403,7 +2490,7 @@ func (s *BrokerSuite) TestOffsetCoordinatorNoCoordinatorError(c *C) {
 	})
 
 	conf := s.newTestBrokerConf("tester")
-	broker, err := Dial([]string{srv.Address()}, conf)
+	broker, err := NewBroker("test-cluster-not-coordinator", []string{srv.Address()}, conf)
 	c.Assert(err, IsNil)
 
 	coordConf := NewOffsetCoordinatorConf("test-group")
@@ -2459,7 +2546,10 @@ func (s *BrokerSuite) benchmarkConsumer(c *C, messagesPerResp int) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test"))
+	broker, err := NewBroker(
+		"test-cluster-benchmark-consumer",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("test"))
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
@@ -2524,7 +2614,10 @@ func (s *BrokerSuite) benchmarkConsumerConcurrent(c *C, concurrentConsumers int)
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("test"))
+	broker, err := NewBroker(
+		"test-cluster-benchmark-consumer-concurrent",
+		[]string{srv.Address()},
+		s.newTestBrokerConf("test"))
 	c.Assert(err, IsNil)
 
 	conf := NewConsumerConf("test", 0)
@@ -2585,7 +2678,7 @@ func (s *BrokerSuite) benchmarkProducer(c *C, messagesPerReq int64) {
 		}
 	})
 
-	broker, err := Dial([]string{srv.Address()}, s.newTestBrokerConf("tester"))
+	broker, err := NewBroker("test-cluster-benchmark-producer", []string{srv.Address()}, s.newTestBrokerConf("tester"))
 	c.Assert(err, IsNil)
 
 	messages := make([]*proto.Message, messagesPerReq)

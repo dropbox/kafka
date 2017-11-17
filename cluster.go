@@ -197,9 +197,11 @@ func (cm *Cluster) Fetch(clientId string, topics ...string) (*proto.MetadataResp
 	// Get all addresses, then walk the array in permuted random order.
 	addrs := cm.metadataConnPool.GetAllAddrs()
 	log.Infof("metadata fetch addrs: %s", addrs)
+	// split the timeout so that we can try getting the metadata from more than one broker.
+	perBrokerTimeout := cm.getTimeout() / 2
 	for _, idx := range rndPerm(len(addrs)) {
 		// Directly connect, ignoring connection pool limits. This connection must be closed here.
-		conn, err := newTCPConnection(addrs[idx], cm.getTimeout())
+		conn, err := newTCPConnection(addrs[idx], perBrokerTimeout)
 		if err != nil {
 			log.Warningf("metadata fetch failed to connect to node %s: %s", addrs[idx], err)
 			continue

@@ -1,13 +1,21 @@
 package kafka
 
 import (
+	"flag"
 	"sync"
 
 	"github.com/op/go-logging"
 )
 
-var log *logging.Logger
-var logMu = &sync.Mutex{}
+var (
+	log *logging.Logger
+	logMu = &sync.Mutex{}
+
+	logLevel = flag.Int(
+		"kafka.log_level",
+		int(logging.INFO),
+		"Set logging verbosity for Kafka client.")
+)
 
 func init() {
 	logMu.Lock()
@@ -17,7 +25,7 @@ func init() {
 		return
 	}
 	log = logging.MustGetLogger("KafkaClient")
-	logging.SetLevel(logging.INFO, "KafkaClient")
+	logging.SetLevel(logging.Level(*logLevel), "KafkaClient")
 }
 
 func SetLogger(l *logging.Logger) {

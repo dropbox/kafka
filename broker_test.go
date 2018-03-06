@@ -259,7 +259,6 @@ func (s *BrokerSuite) TestProducer(c *C) {
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
-	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 	messages := []*proto.Message{
 		{Value: []byte("first")},
@@ -328,7 +327,6 @@ func (s *BrokerSuite) TestProducerWithNoAck(c *C) {
 
 	prodConf := NewProducerConf()
 	prodConf.RequiredAcks = proto.RequiredAcksNone
-	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 	messages := []*proto.Message{
 		{Value: []byte("first")},
@@ -1635,8 +1633,6 @@ func (s *BrokerSuite) TestProducerFailoverRequestTimeout(c *C) {
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
-	prodConf.RetryLimit = 4
-	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 
 	_, err = producer.Produce(
@@ -1703,8 +1699,6 @@ func (s *BrokerSuite) TestProducerFailoverLeaderNotAvailable(c *C) {
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
-	prodConf.RetryLimit = 5
-	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 
 	for try := 0; try < numTriesRequired; try++ {
@@ -1765,8 +1759,6 @@ func (s *BrokerSuite) TestProducerNoCreateTopic(c *C) {
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
-	prodConf.RetryLimit = 5
-	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 
 	_, err = producer.Produce(
@@ -1818,8 +1810,6 @@ func (s *BrokerSuite) TestProducerTryCreateTopic(c *C) {
 	c.Assert(err, IsNil)
 
 	prodConf := NewProducerConf()
-	prodConf.RetryLimit = 5
-	prodConf.RetryWait = time.Millisecond
 	producer := broker.Producer(prodConf)
 
 	_, err = producer.Produce("test2", 0, &proto.Message{Value: []byte("first")},
@@ -2187,7 +2177,6 @@ To get the error EPIPE, you need to send large amount of data after closing the 
 	`, 1000))
 
 	pconf := NewProducerConf()
-	pconf.RetryWait = time.Millisecond
 	pconf.RequestTimeout = time.Millisecond * 20
 	producer := broker.Producer(pconf)
 	waitForMetadataEpoch(c, producer, 1)

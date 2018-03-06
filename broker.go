@@ -458,17 +458,6 @@ type ProducerConf struct {
 	// Setting this to any other, greater than zero value will make producer to
 	// wait for given number of servers to confirm write before returning.
 	RequiredAcks int16
-
-	// RetryLimit specify how many times message producing should be retried in
-	// case of failure, before returning the error to the caller. By default
-	// set to 10.
-	RetryLimit int
-
-	// RetryWait specify wait duration before produce retry after failure. This
-	// is subject to exponential backoff.
-	//
-	// Defaults to 200ms.
-	RetryWait time.Duration
 }
 
 // NewProducerConf returns a default producer configuration.
@@ -477,8 +466,6 @@ func NewProducerConf() ProducerConf {
 		Compression:    proto.CompressionNone,
 		RequestTimeout: 5 * time.Second,
 		RequiredAcks:   proto.RequiredAcksAll,
-		RetryLimit:     10,
-		RetryWait:      200 * time.Millisecond,
 	}
 }
 
@@ -497,10 +484,8 @@ func (b *Broker) Producer(conf ProducerConf) Producer {
 }
 
 // Produce writes messages to the given destination. Writes within the call are
-// atomic, meaning either all or none of them are written to kafka.  Produce
-// has a configurable amount of retries which may be attempted when common
-// errors are encountered.  This behaviour can be configured with the
-// RetryLimit and RetryWait attributes.
+// atomic, meaning either all or none of them are written to kafka. Produce does not
+// retry in the case of failure.
 //
 // Upon a successful call, the message's Offset field is updated.
 func (p *producer) Produce(

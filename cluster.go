@@ -75,7 +75,7 @@ func NewCluster(nodeAddresses []string, conf ClusterConnectionConf) (*Cluster, e
 	for try := 0; try < conf.DialRetryLimit; try++ {
 		if try > 0 {
 			sleepFor := retry.Duration()
-			log.Infof("cannot fetch metadata from any connection (try %d, sleep %f)",
+			log.Infof("cannot fetch metadata from any connection (try %d, sleep %v)",
 				try, sleepFor)
 			time.Sleep(sleepFor)
 		}
